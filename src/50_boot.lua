@@ -94,9 +94,17 @@ local cfg = gui.section(settings, "Config")
 gui.button(cfg, { text = "Save config", callback = function() SD.save_config() end })
 gui.button(cfg, { text = "Unload", color = Color3.fromRGB(60, 26, 34), text_color = T.danger, callback = function() SD.unload() end })
 
-local expl = gui.section(settings, "Exploit scan (manual, optional)")
-gui.label(expl, "Scans remotes for cash-gain bugs. Results in console (F9). May be risky in some games.", 16, T.muted).TextSize = 11
-gui.button(expl, { text = "Run Exploit Scan", callback = function() task.spawn(function() if SD.exploits and SD.exploits.find_exploits then SD.exploits.find_exploits() else SD.notify("Exploit module unavailable", "warn") end end) end })
+local expl = gui.section(settings, "Exploit / dupe scan (manual)")
+gui.label(expl, "Scans client-visible remotes/prompts for cash/stat-gain bugs and dupe-shaped arg patterns. Never fires gamepass/robux/buy/admin remotes. Results print to console (F9).", 16, T.muted).TextSize = 11
+gui.button(expl, { text = "Scan (fast)", callback = function() task.spawn(function() if SD.exploits then SD.exploits.find_exploits() end end) end })
+gui.button(expl, { text = "Deep Dupe/Exploit Scan (thorough)", color = T.accent, callback = function() task.spawn(function() if SD.exploits and SD.exploits.deep_dupe_scan then SD.exploits.deep_dupe_scan() else SD.notify("Unavailable", "warn") end end) end })
+gui.button(expl, { text = "Dump Recon to Console", callback = function() SD.dump(); SD.notify("Recon dumped (F9)", "ok") end })
+gui.button(expl, { text = "Show Last Hits", callback = function()
+	local E = SD.exploits
+	if not E or #(E.hits or {}) == 0 then SD.notify("No hits yet", "warn"); return end
+	for _, h in ipairs(E.hits) do SD.log(("[HIT] %s +%s %s args=%s"):format(h.remote or h.name, SD.fmt(h.gain), h.stat or "", h.args or "")) end
+	SD.notify(#E.hits .. " hit(s) printed to console", "ok")
+end })
 
 -- RUNTIME -------------------------------------------------------------------
 F.register_tasks()
