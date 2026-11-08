@@ -10,7 +10,7 @@
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "2.0.0"
+SD.version   = "2.1.0"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)
@@ -294,14 +294,14 @@ SD.config = {
     jumppower        = 50,
     jumppower_lock   = false,
 
-    -- utility
-    anti_afk         = true,
-    auto_rejoin      = true,
-    fullbright       = false,
-    fps_boost        = false,
-    esp_crown        = false,
-    esp_sell         = false,
-    esp_dirt         = false,
+    -- utility (all off by default)
+	    anti_afk         = false,
+	    auto_rejoin      = false,
+	    fullbright       = false,
+	    fps_boost        = false,
+	    esp_crown        = false,
+	    esp_sell         = false,
+	    esp_dirt         = false,
 
     -- user overrides (filled by the GUI, used by the heuristics)
     crown_name       = "",
@@ -334,16 +334,24 @@ function SD.save_config()
 end
 
 function SD.load_config()
-    if not (SD.caps.readfile and SD.caps.isfile) then return false end
-    if not isfile(SD.CONFIG_FILE) then return false end
-    local ok, raw = pcall(readfile, SD.CONFIG_FILE)
-    if not ok or not raw then return false end
-    local decoded_ok, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
-    if not decoded_ok or type(data) ~= "table" then return false end
-    for k, v in pairs(data) do
-        if SD.config[k] ~= nil then SD.config[k] = v end
-    end
-    return true
-end
+	    if not (SD.caps.readfile and SD.caps.isfile) then return false end
+	    if not isfile(SD.CONFIG_FILE) then return false end
+	    local ok, raw = pcall(readfile, SD.CONFIG_FILE)
+	    if not ok or not raw then return false end
+	    local decoded_ok, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
+	    if not decoded_ok or type(data) ~= "table" then return false end
+	    for k, v in pairs(data) do
+	        if SD.config[k] ~= nil then SD.config[k] = v end
+	    end
+	    -- Always start with features OFF (user requested: nothing enabled by default)
+	    local force_off = {
+	        "auto_sell","auto_dig","auto_collect","auto_upgrade","auto_rebirth",
+	        "tp_crown","walkspeed_lock","jumppower_lock","fullbright","fps_boost",
+	        "esp_crown","esp_sell","esp_dirt","anti_afk","auto_rejoin",
+	        "auto_sell_teleport","queue_on_teleport",
+	    }
+	    for _, k in ipairs(force_off) do SD.config[k] = false end
+	    return true
+	end
 
 SD.log("core loaded v" .. SD.version)

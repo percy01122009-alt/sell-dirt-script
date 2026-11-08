@@ -10,7 +10,7 @@
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "2.0.0"
+SD.version   = "2.1.0"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)
@@ -294,14 +294,14 @@ SD.config = {
     jumppower        = 50,
     jumppower_lock   = false,
 
-    -- utility
-    anti_afk         = true,
-    auto_rejoin      = true,
-    fullbright       = false,
-    fps_boost        = false,
-    esp_crown        = false,
-    esp_sell         = false,
-    esp_dirt         = false,
+    -- utility (all off by default)
+	    anti_afk         = false,
+	    auto_rejoin      = false,
+	    fullbright       = false,
+	    fps_boost        = false,
+	    esp_crown        = false,
+	    esp_sell         = false,
+	    esp_dirt         = false,
 
     -- user overrides (filled by the GUI, used by the heuristics)
     crown_name       = "",
@@ -334,17 +334,25 @@ function SD.save_config()
 end
 
 function SD.load_config()
-    if not (SD.caps.readfile and SD.caps.isfile) then return false end
-    if not isfile(SD.CONFIG_FILE) then return false end
-    local ok, raw = pcall(readfile, SD.CONFIG_FILE)
-    if not ok or not raw then return false end
-    local decoded_ok, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
-    if not decoded_ok or type(data) ~= "table" then return false end
-    for k, v in pairs(data) do
-        if SD.config[k] ~= nil then SD.config[k] = v end
-    end
-    return true
-end
+	    if not (SD.caps.readfile and SD.caps.isfile) then return false end
+	    if not isfile(SD.CONFIG_FILE) then return false end
+	    local ok, raw = pcall(readfile, SD.CONFIG_FILE)
+	    if not ok or not raw then return false end
+	    local decoded_ok, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
+	    if not decoded_ok or type(data) ~= "table" then return false end
+	    for k, v in pairs(data) do
+	        if SD.config[k] ~= nil then SD.config[k] = v end
+	    end
+	    -- Always start with features OFF (user requested: nothing enabled by default)
+	    local force_off = {
+	        "auto_sell","auto_dig","auto_collect","auto_upgrade","auto_rebirth",
+	        "tp_crown","walkspeed_lock","jumppower_lock","fullbright","fps_boost",
+	        "esp_crown","esp_sell","esp_dirt","anti_afk","auto_rejoin",
+	        "auto_sell_teleport","queue_on_teleport",
+	    }
+	    for _, k in ipairs(force_off) do SD.config[k] = false end
+	    return true
+	end
 
 SD.log("core loaded v" .. SD.version)
 
@@ -2699,11 +2707,10 @@ function E.sell_candidates()
 	end
 
 	function E.auto_configure()
+		-- Scan only: do NOT spoof prompts/clicks (spoofing makes fake "tap" prompts appear everywhere)
 		SD.refresh(true)
 		local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
 		local plotName = plot and (plot.Name or "found") or "not detected (script will still try safely)"
-		if SD.caps.fireprompt then E.prompt_spoof() end
-		if SD.caps.fireclick then E.click_spoof() end
 
 		-- pick a likely sell remote (name match) without firing it
 		local best = nil
@@ -2718,11 +2725,11 @@ function E.sell_candidates()
 			SD.config.sell_remote = best.name
 		end
 
-		local report = ("Auto-config done. Plot: %s | Remotes: %d | Prompts: %d | Sell remote: %s"):format(
-			plotName, #SD.cache.remotes, #SD.cache.prompts, best and best.name or "(auto/zone)"
+		local report = ("Scan done. Plot: %s | Remotes: %d | Prompts: %d | Sell remote: %s"):format(
+			plotName, #SD.cache.remotes, #SD.cache.prompts, best and best.name or "(auto/remote)"
 		)
 		SD.log(report)
-		SD.notify("Ready. Use Grind tab to enable Auto Sell/Auto Dig.", "ok")
+		SD.notify("Scan done. Nothing enabled - turn on what you want in Grind/Move.", "ok")
 		return report
 	end
 
@@ -2868,13 +2875,13 @@ function E.build_gui(parent, gui)
 		})
 
 		gui.button(adv, {
-			text = "Prompt spoof (reach/hold)",
-			callback = function() SD.notify(("%d prompts patched"):format(E.prompt_spoof()), "ok") end,
+			text = "Prompt spoof (reach/hold) - CAN SHOW FAKE TAP BUTTONS",
+			callback = function() SD.notify(("%d prompts patched (may show fake taps)"):format(E.prompt_spoof()), "warn") end,
 		})
 
 		gui.button(adv, {
-			text = "Click detector reach",
-			callback = function() SD.notify(("%d detectors patched"):format(E.click_spoof()), "ok") end,
+			text = "Click detector reach (advanced)",
+			callback = function() SD.notify(("%d detectors patched"):format(E.click_spoof()), "warn") end,
 		})
 
 		gui.button(adv, {
@@ -2958,10 +2965,10 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Main (turn on and play)")
-gui.label(auto, "Auto-config runs on load. Auto Sell uses remotes (no teleport by default) and only your plot.", 16, T.muted).TextSize = 11
+local auto = gui.section(grind, "Main (turn on what you want)")
+gui.label(auto, "Nothing is enabled by default. Auto Sell uses remotes (no teleport) and only your plot.", 16, T.muted).TextSize = 11
 gui.button(auto, {
-	text = "Run Auto-Setup again",
+	text = "Scan Game / Detect Plot",
 	callback = function() pcall(function() SD.exploits.auto_configure() end) end,
 })
 
@@ -3370,10 +3377,8 @@ SD.features.register_tasks()
 	SD.features.bind_character()
 	task.spawn(function()
 		SD.refresh(true)
-		task.wait(0.2)
-		pcall(function() SD.exploits.auto_configure() end)
 	end)
 
-	SD.notify("Ready - enable Auto Sell / Auto Dig in Grind tab", "ok")
-	SD.log("booted. Auto-config ran. If something misses, set Target overrides in Grind.")
+	SD.notify("Loaded (v" .. SD.version .. "). Nothing is enabled - turn on what you want.", "ok")
+	SD.log("booted. Nothing enabled by default. Use Grind/Move tabs to enable features.")
 

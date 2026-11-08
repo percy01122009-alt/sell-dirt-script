@@ -42,10 +42,10 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Main (turn on and play)")
-gui.label(auto, "Auto-config runs on load. Auto Sell uses remotes (no teleport by default) and only your plot.", 16, T.muted).TextSize = 11
+local auto = gui.section(grind, "Main (turn on what you want)")
+gui.label(auto, "Nothing is enabled by default. Auto Sell uses remotes (no teleport) and only your plot.", 16, T.muted).TextSize = 11
 gui.button(auto, {
-	text = "Run Auto-Setup again",
+	text = "Scan Game / Detect Plot",
 	callback = function() pcall(function() SD.exploits.auto_configure() end) end,
 })
 
@@ -454,9 +454,7 @@ SD.features.register_tasks()
 	SD.features.bind_character()
 	task.spawn(function()
 		SD.refresh(true)
-		task.wait(0.2)
-		pcall(function() SD.exploits.auto_configure() end)
 	end)
 
-	SD.notify("Ready - enable Auto Sell / Auto Dig in Grind tab", "ok")
-	SD.log("booted. Auto-config ran. If something misses, set Target overrides in Grind.")
+	SD.notify("Loaded (v" .. SD.version .. "). Nothing is enabled - turn on what you want.", "ok")
+	SD.log("booted. Nothing enabled by default. Use Grind/Move tabs to enable features.")
