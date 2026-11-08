@@ -879,21 +879,22 @@ function gui.build()
     })
     vlist(toast_host, 6)
 
-    -- floating opener
-    local opener = new("TextButton", {
-        AnchorPoint = Vector2.new(1, 0),
-        Position = UDim2.new(1, -14, 0, 44),
-        Size = UDim2.new(0, 46, 0, 46),
-        BackgroundColor3 = T.accent,
-        AutoButtonColor = false,
-        Font = FONT_BOLD,
-        TextSize = 13,
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        Text = "SD",
-        Parent = sg,
-    })
-    corner(opener, 14)
-    stroke(opener, Color3.fromRGB(160, 138, 255), 1)
+    -- floating opener (always visible: toggles show/hide)
+	    local opener = new("TextButton", {
+	        AnchorPoint = Vector2.new(1, 0),
+	        Position = UDim2.new(1, -14, 0, 44),
+	        Size = UDim2.new(0, 52, 0, 46),
+	        BackgroundColor3 = T.accent,
+	        AutoButtonColor = false,
+	        Font = FONT_BOLD,
+	        TextSize = 12,
+	        TextColor3 = Color3.fromRGB(255, 255, 255),
+	        Text = "SD",
+	        Parent = sg,
+	    })
+	    corner(opener, 14)
+	    stroke(opener, Color3.fromRGB(160, 138, 255), 1)
+	    gui.opener = opener
 
     -- main window
     local vp = viewport()
@@ -1000,47 +1001,61 @@ function gui.build()
     pad(body, 0, 10, 8, 10)
     gui.body = body
 
-    -- open / close
-    local function set_open(open)
-        win.Visible = open
-        opener.Visible = not open
-    end
-    opener.MouseButton1Click:Connect(function() set_open(true) end)
-    close.MouseButton1Click:Connect(function() set_open(false) end)
-    gui.set_open = set_open
+    -- open / close (opener stays visible and toggles)
+	    local function set_open(open)
+	        win.Visible = open and true or false
+	        opener.Visible = true
+	        opener.Text = win.Visible and "Hide" or "SD"
+	        opener.BackgroundColor3 = win.Visible and T.panel2 or T.accent
+	        opener.TextColor3 = win.Visible and T.text or Color3.fromRGB(255, 255, 255)
+	    end
+	    opener.MouseButton1Click:Connect(function() set_open(not win.Visible) end)
+	    close.MouseButton1Click:Connect(function() set_open(false) end)
+	    gui.set_open = set_open
 
-    -- drag
-    local dragging, drag_start, start_pos = false, nil, nil
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            drag_start = input.Position
-            start_pos = win.Position
-        end
-    end)
-    UIS.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement
-            and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local d = input.Position - drag_start
-        win.Position = UDim2.new(
-            start_pos.X.Scale, start_pos.X.Offset + d.X,
-            start_pos.Y.Scale, start_pos.Y.Offset + d.Y
-        )
-    end)
-    UIS.InputEnded:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-            local v = viewport()
-            local half = win.AbsoluteSize / 2
-            local cx = math.clamp(win.AbsolutePosition.X + half.X, half.X, v.X - half.X)
-            local cy = math.clamp(win.AbsolutePosition.Y + half.Y, half.Y, v.Y - half.Y)
-            win.Position = UDim2.fromOffset(cx, cy)
-        end
-    end)
+    -- drag (track the active input to avoid touch/mouse conflicts)
+	    local dragInput, dragStart, startPos = nil, nil, nil
+	    local function beginDrag(input)
+	        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+	            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	        -- don't drag when pressing the close button area
+	        local pos = input.Position
+	        local ap = close.AbsolutePosition
+	        local asz = close.AbsoluteSize
+	        if pos.X >= ap.X - 4 and pos.X <= ap.X + asz.X + 4
+	            and pos.Y >= ap.Y - 4 and pos.Y <= ap.Y + asz.Y + 4 then
+	            return
+	        end
+	        dragInput = input
+	        dragStart = input.Position
+	        startPos = win.Position
+	    end
+	    bar.InputBegan:Connect(beginDrag)
+	    close.InputBegan:Connect(function() dragInput = nil end)
+
+	    UIS.InputChanged:Connect(function(input)
+	        if input ~= dragInput then return end
+	        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+	            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	        if not (dragStart and startPos) then return end
+	        local d = input.Position - dragStart
+	        win.Position = UDim2.new(
+	            startPos.X.Scale, startPos.X.Offset + d.X,
+	            startPos.Y.Scale, startPos.Y.Offset + d.Y
+	        )
+	    end)
+	    UIS.InputEnded:Connect(function(input)
+	        if input ~= dragInput then return end
+	        dragInput = nil
+	        local v = viewport()
+	        local half = win.AbsoluteSize
+	        local x = win.AbsolutePosition.X
+	        local y = win.AbsolutePosition.Y
+	        local margin = 8
+	        local nx = math.clamp(x, margin - half.X + 60, v.X - 60 - margin)
+	        local ny = math.clamp(y, margin, math.max(margin, v.Y - 44 - margin))
+	        win.Position = UDim2.fromOffset(nx, ny)
+	    end)
 
     -- tabs
     function gui.tab(name)
@@ -1492,13 +1507,142 @@ local F = {}
 SD.features = F
 
 -- defaults that live here rather than in core (feature-local knobs)
-	if SD.config.sell_return == nil then SD.config.sell_return = true end
-	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-	if SD.config.esp_players == nil then SD.config.esp_players = false end
-	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
-	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
+		if SD.config.sell_return == nil then SD.config.sell_return = true end
+		if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
+		if SD.config.esp_players == nil then SD.config.esp_players = false end
+		if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
+		if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
+		if SD.config.only_my_plot == nil then SD.config.only_my_plot = true end
+		if SD.config.tp_crown_only_active == nil then SD.config.tp_crown_only_active = true end
 
--- rate gate ---------------------------------------------------------------
+-- plot ownership (fix: never interact with another player's plot) ---------
+
+	F._my_plot = nil
+	F._my_plot_at = 0
+
+	local function owner_matches_player(obj)
+		if not obj or not obj.Parent then return false end
+		local plr = SD.plr
+		if not plr then return false end
+		local name = plr.Name
+		local uid = plr.UserId
+
+		-- common attribute patterns
+		local okAttr, attrs = pcall(function() return obj:GetAttributes() end)
+		if okAttr and type(attrs) == "table" then
+			for k, v in pairs(attrs) do
+				local lk = string.lower(tostring(k))
+				if string.find(lk, "owner", 1, true) or string.find(lk, "user", 1, true) then
+					if v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then
+						return true
+					end
+					if typeof and typeof(v) == "Instance" and v == plr then return true end
+				end
+			end
+		end
+
+		-- ObjectValue/StringValue/IntValue owner markers
+		for _, key in ipairs({ "Owner", "owner", "Player", "player", "OwnerId", "UserId", "PlotOwner" }) do
+			local child = obj:FindFirstChild(key)
+			if child then
+				local ok, val = pcall(function() return child.Value end)
+				if ok then
+					if val == plr or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid) then
+						return true
+					end
+				end
+			end
+		end
+
+		return false
+	end
+
+	local function path_has_my_name(inst)
+		if not inst or not SD.plr then return false end
+		local ok, path = pcall(function() return inst:GetFullName() end)
+		if not ok or not path then return false end
+		return string.find(path, SD.plr.Name, 1, true) ~= nil
+	end
+
+	function F.my_plot()
+		if F._my_plot and F._my_plot.Parent and (os.clock() - F._my_plot_at) < 8 then
+			return F._my_plot
+		end
+		F._my_plot = nil
+
+		local roots = {}
+		for _, name in ipairs({ "Plots", "plots", "Tycoons", "tycoons", "Bases", "bases", "Islands", "islands", "Farms", "farms", "PlayerPlots" }) do
+			local r = workspace:FindFirstChild(name)
+			if r then roots[#roots + 1] = r end
+		end
+		if #roots == 0 then
+			-- scan top-level for plot-like containers
+			for _, c in ipairs(workspace:GetChildren()) do
+				local ln = string.lower(c.Name)
+				if string.find(ln, "plot", 1, true) or string.find(ln, "tycoon", 1, true) or string.find(ln, "base", 1, true) then
+					roots[#roots + 1] = c
+				end
+			end
+		end
+
+		for _, root in ipairs(roots) do
+			-- direct child named after player
+			local byName = root:FindFirstChild(SD.plr.Name)
+			if byName then F._my_plot = byName break end
+
+			for _, plot in ipairs(root:GetChildren()) do
+				if owner_matches_player(plot) or path_has_my_name(plot) then
+					F._my_plot = plot
+					break
+				end
+			end
+			if F._my_plot then break end
+		end
+
+		-- fallback: nearest plot-like model to spawn/character that has sell-like stuff? risky.
+		if F._my_plot then F._my_plot_at = os.clock() end
+		return F._my_plot
+	end
+
+	function F.is_mine(inst)
+		if not SD.config.only_my_plot then return true end
+		local plot = F.my_plot()
+		if not plot then return true end -- can't determine ownership: don't block everything
+		local obj = inst
+		if typeof(inst) == "Instance" then
+			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
+				obj = inst.Parent
+			end
+		end
+		if not obj then return true end
+		local ok, isDesc = pcall(function() return obj:IsDescendantOf(plot) end)
+		if ok and isDesc then return true end
+		-- allow if it's literally the plot or has our name
+		if path_has_my_name(obj) then return true end
+		-- check owner markers on ancestors up a bit
+		local cur = obj
+		for _ = 1, 6 do
+			if not cur or cur == workspace then break end
+			if owner_matches_player(cur) then return true end
+			cur = cur.Parent
+		end
+		return false
+	end
+
+	local function filter_mine(list)
+		if not SD.config.only_my_plot then return list end
+		local plot = F.my_plot()
+		if not plot then return list end
+		local out = {}
+		for _, v in ipairs(list) do
+			if F.is_mine(v) then out[#out + 1] = v end
+		end
+		-- if filtering removed everything, fall back to unfiltered to avoid breaking games without plot metadata
+		if #out == 0 then return list end
+		return out
+	end
+
+	-- rate gate ---------------------------------------------------------------
 
 local gates = {}
 function SD.gate(key, delay)
@@ -1519,96 +1663,139 @@ local REBIRTH_PATTERNS = { "rebirth", "prestige", "ascend", "reset" }
 local TOOL_PATTERNS   = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator" }
 
 function F.sell_target()
-    local custom = SD.config.sell_name
-    if custom and custom ~= "" then
-        local p = SD.find_parts({ custom })
-        if #p > 0 then return p[1] end
-        local pr = SD.prompts_matching({ custom })
-        if #pr > 0 then return pr[1] end
-    end
-    local pr = SD.prompts_matching(SELL_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(SELL_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    local parts = SD.find_parts(SELL_PATTERNS)
-    if #parts > 0 then return parts[1] end
-    local pr2 = SD.prompts_matching(SELL_FALLBACK)
-    if #pr2 > 0 then return pr2[1] end
-    return nil
-end
+	    local custom = SD.config.sell_name
+	    if custom and custom ~= "" then
+	        local p = filter_mine(SD.find_parts({ custom }))
+	        if #p > 0 then return p[1] end
+	        local pr = filter_mine(SD.prompts_matching({ custom }))
+	        if #pr > 0 then return pr[1] end
+	    end
+	    local pr = filter_mine(SD.prompts_matching(SELL_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(SELL_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    local parts = filter_mine(SD.find_parts(SELL_PATTERNS))
+	    if #parts > 0 then return parts[1] end
+	    local pr2 = filter_mine(SD.prompts_matching(SELL_FALLBACK))
+	    if #pr2 > 0 then return pr2[1] end
+	    -- if nothing in my plot matched, try unfiltered custom (user explicitly set it)
+	    if custom and custom ~= "" then
+	        local p = SD.find_parts({ custom })
+	        if #p > 0 then return p[1] end
+	    end
+	    return nil
+	end
 
 local crown_memo, crown_memo_at = nil, 0
 
-function F.crown_target()
-    if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 3 then
-        return crown_memo
-    end
+	local function crown_is_active(inst)
+		if not inst or not inst.Parent then return false end
+		-- must be in the live world, not a stored template
+		local okW, inWorld = pcall(function()
+			return inst:IsDescendantOf(workspace)
+		end)
+		if not okW or not inWorld then return false end
 
-    local found = nil
+		local function part_visible(p)
+			if not p or not p:IsA("BasePart") then return false end
+			if p.Transparency >= 0.98 then return false end
+			local okSize, sz = pcall(function() return p.Size end)
+			if okSize and sz and sz.Magnitude < 0.05 then return false end
+			return true
+		end
 
-    local custom = SD.config.crown_name
-    if custom and custom ~= "" then
-        local p = SD.find_parts({ custom })
-        if #p > 0 then found = p[1] end
-    end
+		if inst:IsA("BasePart") then
+			return part_visible(inst)
+		elseif inst:IsA("Model") then
+			if inst.PrimaryPart and part_visible(inst.PrimaryPart) then return true end
+			for _, d in ipairs(inst:GetDescendants()) do
+				if part_visible(d) then return true end
+			end
+			return false
+		end
 
-    if not found then
-        local parts = SD.find_parts(CROWN_PATTERNS)
-        if #parts > 0 then found = parts[1] end
-    end
+		local p = SD.resolve_part(inst)
+		return part_visible(p)
+	end
 
-    if not found then
-        local models = SD.find_models(CROWN_PATTERNS)
-        if #models > 0 then found = models[1] end
-    end
+	function F.crown_target(opts)
+		opts = opts or {}
+		local require_active = opts.require_active
+		if require_active == nil then require_active = SD.config.tp_crown_only_active end
 
-    -- last resort: the part carrying a BillboardGui that says "crown".
-    -- Gated — this walks every part and is only worth it a couple of times a minute.
-    if not found and SD.gate("crown_billboard_scan", 8) then
-        SD.refresh()
-        for _, p in ipairs(SD.cache.parts) do
-            local bb = p:FindFirstChildWhichIsA("BillboardGui", true)
-            if bb then
-                for _, d in ipairs(bb:GetDescendants()) do
-                    if d:IsA("TextLabel") and SD.match(d.Text, CROWN_PATTERNS) then
-                        found = p
-                        break
-                    end
-                end
-            end
-            if found then break end
-        end
-    end
+		if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 2 then
+			if (not require_active) or crown_is_active(crown_memo) then
+				return crown_memo
+			end
+			crown_memo = nil
+		end
 
-    if found then
-        crown_memo, crown_memo_at = found, os.clock()
-    end
-    return found
-end
+		local candidates = {}
+
+		local custom = SD.config.crown_name
+		if custom and custom ~= "" then
+			for _, p in ipairs(SD.find_parts({ custom })) do candidates[#candidates + 1] = p end
+			for _, m in ipairs(SD.find_models({ custom })) do candidates[#candidates + 1] = m end
+		end
+
+		for _, p in ipairs(SD.find_parts(CROWN_PATTERNS)) do candidates[#candidates + 1] = p end
+		for _, m in ipairs(SD.find_models(CROWN_PATTERNS)) do candidates[#candidates + 1] = m end
+
+		-- last resort: billboard text saying crown (gated)
+		if #candidates == 0 and SD.gate("crown_billboard_scan", 8) then
+			SD.refresh()
+			for _, p in ipairs(SD.cache.parts) do
+				local bb = p:FindFirstChildWhichIsA("BillboardGui", true)
+				if bb then
+					for _, d in ipairs(bb:GetDescendants()) do
+						if d:IsA("TextLabel") and SD.match(d.Text, CROWN_PATTERNS) then
+							candidates[#candidates + 1] = p
+							break
+						end
+					end
+				end
+				if #candidates > 0 then break end
+			end
+		end
+
+		local found = nil
+		for _, c in ipairs(candidates) do
+			if (not require_active) or crown_is_active(c) then
+				found = c
+				break
+			end
+		end
+
+		if found then
+			crown_memo, crown_memo_at = found, os.clock()
+		end
+		return found
+	end
 
 function F.dirt_target()
-    local hrp = SD.get_hrp()
-    local parts = SD.find_parts(DIRT_PATTERNS)
-    if #parts == 0 then return nil end
-    if not hrp then return parts[1] end
-    return (SD.nearest_part(parts, hrp.Position))
-end
+	    local hrp = SD.get_hrp()
+	    local parts = filter_mine(SD.find_parts(DIRT_PATTERNS))
+	    if #parts == 0 then parts = SD.find_parts(DIRT_PATTERNS) end
+	    if #parts == 0 then return nil end
+	    if not hrp then return parts[1] end
+	    return (SD.nearest_part(parts, hrp.Position))
+	end
 
 function F.upgrade_target()
-    local pr = SD.prompts_matching(UPGRADE_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(UPGRADE_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    return nil
-end
+	    local pr = filter_mine(SD.prompts_matching(UPGRADE_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(UPGRADE_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    return nil
+	end
 
-function F.rebirth_target()
-    local pr = SD.prompts_matching(REBIRTH_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(REBIRTH_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    return nil
-end
+	function F.rebirth_target()
+	    local pr = filter_mine(SD.prompts_matching(REBIRTH_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(REBIRTH_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    return nil
+	end
 
 function F.dig_tool()
     local ch = SD.get_char()
@@ -1713,25 +1900,27 @@ function F.fire_sell_remotes()
 	end
 
 function F.dig_click()
-    local hrp = SD.get_hrp()
-    if not hrp then return 0 end
-    SD.refresh()
-    local fired = 0
-    for _, c in ipairs(SD.cache.clicks) do
-        local part = SD.resolve_part(c)
-        if part then
-            local d = (part.Position - hrp.Position).Magnitude
-            if d <= 26 then
-                local pname = c.Parent and c.Parent.Name or ""
-                if SD.match(part.Name, DIRT_PATTERNS) or SD.match(pname, DIRT_PATTERNS) then
-                    pcall(fireclickdetector, c)
-                    fired = fired + 1
-                end
-            end
-        end
-    end
-    return fired
-end
+	    local hrp = SD.get_hrp()
+	    if not hrp then return 0 end
+	    SD.refresh()
+	    local fired = 0
+	    for _, c in ipairs(SD.cache.clicks) do
+	        if F.is_mine(c) then
+	            local part = SD.resolve_part(c)
+	            if part then
+	                local d = (part.Position - hrp.Position).Magnitude
+	                if d <= 26 then
+	                    local pname = c.Parent and c.Parent.Name or ""
+	                    if SD.match(part.Name, DIRT_PATTERNS) or SD.match(pname, DIRT_PATTERNS) then
+	                        pcall(fireclickdetector, c)
+	                        fired = fired + 1
+	                    end
+	                end
+	            end
+	        end
+	    end
+	    return fired
+	end
 
 function F.dig_once()
     local mode = SD.config.dig_mode or "both"
@@ -1750,30 +1939,49 @@ function F.dig_once()
     end
 
     if not acted and SD.caps.fireprompt then
-        local hrp = SD.get_hrp()
-        if hrp then
-            SD.refresh()
-            for _, p in ipairs(SD.cache.prompts) do
-                local part = SD.resolve_part(p)
-                if part and (part.Position - hrp.Position).Magnitude <= 22 then
-                    local pname = p.Parent and p.Parent.Name or ""
-                    if SD.match(pname, DIRT_PATTERNS) or SD.match(p.Name, DIRT_PATTERNS) then
-                        pcall(fireproximityprompt, p)
-                        acted = true
-                    end
-                end
-            end
-        end
-    end
+	        local hrp = SD.get_hrp()
+	        if hrp then
+	            SD.refresh()
+	            for _, p in ipairs(SD.cache.prompts) do
+	                if F.is_mine(p) then
+	                    local part = SD.resolve_part(p)
+	                    if part and (part.Position - hrp.Position).Magnitude <= 22 then
+	                        local pname = p.Parent and p.Parent.Name or ""
+	                        if SD.match(pname, DIRT_PATTERNS) or SD.match(p.Name, DIRT_PATTERNS) then
+	                            pcall(fireproximityprompt, p)
+	                            acted = true
+	                        end
+	                    end
+	                end
+	            end
+	        end
+	    end
 
     return acted
 end
 
 function F.collect_once()
-    local hrp = SD.get_hrp()
-    if not hrp then return 0 end
-    return SD.interact_near(hrp.Position, 40)
-end
+	    local hrp = SD.get_hrp()
+	    if not hrp then return 0 end
+	    -- interact_near is global in core; do a plot-aware pass first
+	    local n = 0
+	    if SD.caps.fireprompt then
+	        SD.refresh()
+	        for _, p in ipairs(SD.cache.prompts) do
+	            if F.is_mine(p) then
+	                local part = SD.resolve_part(p)
+	                if part and (part.Position - hrp.Position).Magnitude <= 40 then
+	                    local ok = pcall(fireproximityprompt, p)
+	                    if ok then n = n + 1 end
+	                end
+	            end
+	        end
+	    end
+	    if n == 0 then
+	        n = SD.interact_near(hrp.Position, 40)
+	    end
+	    return n
+	end
 
 function F.upgrade_once()
     local t = F.upgrade_target()
@@ -1791,26 +1999,34 @@ function F.rebirth_once()
     return ok
 end
 
-function F.goto_crown()
-    local t = F.crown_target()
-    if not t then
-        -- crown may live on the leaderboard leader
-        local lead = F.leader()
-        if lead then
-            local ch = lead.Character
-            if ch then
-                local hrp = ch:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    SD.tp(hrp.CFrame * CFrame.new(0, 0, 3))
-                    return true
-                end
-            end
-        end
-        return false
-    end
-    local ok, fired = F.visit(t, { radius = 18, settle = 0.25, anchor = false })
-    return ok
-end
+function F.goto_crown(opts)
+		opts = opts or {}
+		local require_active = opts.require_active
+		if require_active == nil then require_active = SD.config.tp_crown_only_active end
+
+		local t = F.crown_target({ require_active = require_active })
+		if not t then
+			-- Only fall back to leaderboard leader when the user explicitly allows
+			-- non-event behavior (manual override). Auto TP must not chase players
+			-- when no crown event/object is active.
+			if not require_active and opts.allow_leader_fallback then
+				local lead = F.leader()
+				if lead then
+					local ch = lead.Character
+					if ch then
+						local hrp = ch:FindFirstChild("HumanoidRootPart")
+						if hrp then
+							SD.tp(hrp.CFrame * CFrame.new(0, 0, 3))
+							return true
+						end
+					end
+				end
+			end
+			return false
+		end
+		local ok = F.visit(t, { radius = 18, settle = 0.25, anchor = false })
+		return ok
+	end
 
 function F.leader()
     local best, bestv = nil, -math.huge
@@ -2400,286 +2616,234 @@ function E.write_value(needle, value)
     return n
 end
 
--- GUI ---------------------------------------------------------------------
+function E.sell_candidates()
+		local out = {}
+		for _, r in ipairs(SD.cache.remotes) do
+			local key = string.lower(r.name .. " " .. r.path)
+			if (string.find(key, "sell", 1, true) or string.find(key, "cash", 1, true) or string.find(key, "deposit", 1, true) or string.find(key, "dirt", 1, true))
+				and not string.find(key, "rebirth", 1, true)
+				and not string.find(key, "prestige", 1, true)
+				and not string.find(key, "admin", 1, true)
+				and not string.find(key, "ban", 1, true) then
+				out[#out + 1] = r
+			end
+		end
+		return out
+	end
+
+	function E.auto_configure()
+		SD.refresh(true)
+		local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
+		local plotName = plot and (plot.Name or "found") or "not detected (script will still try safely)"
+		if SD.caps.fireprompt then E.prompt_spoof() end
+		if SD.caps.fireclick then E.click_spoof() end
+
+		-- pick a likely sell remote (name match) without firing it
+		local best = nil
+		for _, r in ipairs(E.sell_candidates()) do
+			local n = string.lower(r.name)
+			if n == "sell" or n == "selldirt" or n == "sell_dirt" or string.find(n, "sell", 1, true) then
+				best = r
+				break
+			end
+		end
+		if best and (not SD.config.sell_remote or SD.config.sell_remote == "") then
+			SD.config.sell_remote = best.name
+		end
+
+		local report = ("Auto-config done. Plot: %s | Remotes: %d | Prompts: %d | Sell remote: %s"):format(
+			plotName, #SD.cache.remotes, #SD.cache.prompts, best and best.name or "(auto/zone)"
+		)
+		SD.log(report)
+		SD.notify("Ready. Use Grind tab to enable Auto Sell/Auto Dig.", "ok")
+		return report
+	end
+
+	function E.find_exploits()
+		SD.refresh(true)
+		SD.notify("Scanning for cash/dupe-style exploits (manual probe)...", "info")
+		local hits = {}
+		local tried = 0
+
+		local function record(remote, args, gain)
+			hits[#hits + 1] = { path = remote.path, args = args, gain = gain }
+			E.hits[#E.hits + 1] = hits[#hits]
+			SD.log(("[exploit] POSSIBLE %s args=%s +%s"):format(remote.path or remote.name, args, SD.fmt(gain)))
+		end
+
+		local keywords = { "sell","cash","money","coin","reward","claim","collect","buy","dirt","deposit","add","give","redeem","pickup" }
+		local list = SD.remotes_matching(keywords)
+		if #list > 35 then
+			local trimmed = {}
+			for i = 1, 35 do trimmed[i] = list[i] end
+			list = trimmed
+		end
+
+		local probes = {
+			{label = "{}", args = {}},
+			{label = "{1}", args = {1}},
+			{label = "{true}", args = {true}},
+			{label = '{999999}', args = {999999}},
+			{label = '{"SellAll"}', args = {"SellAll"}},
+		}
+		for _, remote in ipairs(list) do
+			if SD.state.paused then break end
+			if tried >= 35 then break end
+			tried = tried + 1
+			local hit = false
+			for _, pr in ipairs(probes) do
+				local gained, amount = E.cash_probe(remote, pr.args, 0.4)
+				if gained and amount > 0 then
+					record(remote, pr.label, amount)
+					hit = true
+					break
+				end
+			end
+			if not hit then task.wait(0.05) end
+		end
+
+		-- dupe-style check: double-fire promising sell remotes and compare delta
+		for _, remote in ipairs(E.sell_candidates()) do
+			if tried >= 45 then break end
+			tried = tried + 1
+			local before = SD.cash()
+			pcall(function() SD.probe_remote(remote, {}) end)
+			pcall(function() SD.probe_remote(remote, {}) end)
+			task.wait(0.5)
+			local after = SD.cash()
+			if before and after and after > before then
+				record(remote, "double-fire {}", after - before)
+			end
+			task.wait(0.05)
+		end
+
+		if #hits == 0 then
+			SD.notify(("Scan done: no obvious cash exploit found (%d checks)."):format(tried), "warn")
+			SD.log("No positive cash deltas found. This does not guarantee no dupes/exploits exist.")
+		else
+			SD.notify(("Found %d possible exploit(s)! Check console (F9)."):format(#hits), "ok")
+		end
+		return hits
+	end
+
+	-- GUI ---------------------------------------------------------------------
 
 function E.build_gui(parent, gui)
-    local T = gui.theme
+		local T = gui.theme
 
-    local disc = gui.section(parent, "Discovery")
-    gui.label(disc, "Nothing is hardcoded. Scan, then pin names in Grind.", 16, T.muted).TextSize = 11
+		local easy = gui.section(parent, "Easy (recommended)")
+		gui.label(easy, "Use these first. They auto-detect your plot and try safe setup steps.", 16, T.muted).TextSize = 11
 
-    gui.button(disc, {
-        text = "Dump recon to console (F9)",
-        callback = function()
-            SD.dump()
-            SD.notify("recon dumped to console", "ok")
-        end,
-    })
+		local status = gui.label(easy, "Status: not scanned yet", 16, T.text)
+		status.TextSize = 11
+		status.TextWrapped = true
+		status.AutomaticSize = Enum.AutomaticSize.Y
 
-    gui.button(disc, {
-        text = "Refresh cache",
-        callback = function()
-            SD.refresh(true)
-            SD.notify(("%d remotes / %d prompts"):format(#SD.cache.remotes, #SD.cache.prompts), "ok")
-        end,
-    })
+		local function refresh_status(extra)
+			local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
+			local plotName = plot and plot.Name or "auto (not detected)"
+			local msg = ("Plot: %s | Remotes: %d | Prompts: %d"):format(plotName, #SD.cache.remotes, #SD.cache.prompts)
+			if extra and extra ~= "" then msg = msg .. "\n" .. extra end
+			status.Text = msg
+		end
 
-    gui.button(disc, {
-        text = "Auto-hunt: fire candidates, watch cash",
-        color = T.accent,
-        callback = function()
-            E.auto_hunt()
-        end,
-    })
+		gui.button(easy, {
+			text = "Auto-Configure (do this first)",
+			color = T.accent,
+			callback = function()
+				local report = E.auto_configure()
+				refresh_status("Ready. Enable Auto Sell / Auto Dig in Grind.")
+			end,
+		})
 
-    -- remote browser
-    local rem = gui.section(parent, "Remote probe")
-    local filter_box = gui.textbox(rem, {
-        text = "filter",
-        default = "sell",
-        placeholder = "sell",
-    })
+		gui.button(easy, {
+			text = "Find Cash / Dupe Exploits (scan)",
+			callback = function()
+				SD.notify("Scanning... results appear as notifications and in console (F9).", "info")
+				task.spawn(function()
+					local hits = E.find_exploits()
+					refresh_status(("Scan done: %d possible exploit(s) found."):format(#hits))
+				end)
+			end,
+		})
 
-    local list_host = gui.new("ScrollingFrame", {
-        Size = UDim2.new(1, 0, 0, 150),
-        BackgroundColor3 = T.panel2,
-        BorderSizePixel = 0,
-        ScrollBarThickness = 3,
-        ScrollBarImageColor3 = T.stroke,
-        CanvasSize = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        Parent = rem,
-    })
-    gui.corner(list_host, 8)
-    gui.new("UIPadding", {
-        PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
-        PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
-        Parent = list_host,
-    })
-    gui.new("UIListLayout", {
-        Padding = UDim.new(0, 4),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Parent = list_host,
-    })
+		gui.button(easy, {
+			text = "Try Sell Remotes Now",
+			callback = function()
+				local n = SD.features and SD.features.fire_sell_remotes and SD.features.fire_sell_remotes() or 0
+				SD.notify(("Fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
+			end,
+		})
 
-    local selected_label = gui.label(rem, "selected: none", 16, T.muted)
-    selected_label.TextSize = 11
+		gui.button(easy, {
+			text = "Show Exploit Results (console)",
+			callback = function()
+				if #E.hits == 0 then SD.notify("No results yet. Run a scan first.", "warn") return end
+				for _, h in ipairs(E.hits) do
+					SD.log(("[hit] %s | args=%s | +%s"):format(h.path, h.args, SD.fmt(h.gain)))
+				end
+				SD.notify(("%d result(s) printed to console"):format(#E.hits), "ok")
+			end,
+		})
 
-    local function select(r)
-        E.selected = r
-        selected_label.Text = "selected: " .. (r and r.name or "none")
-        selected_label.TextColor3 = r and T.on or T.muted
-    end
+		-- Advanced (kept for power users, but not the main flow)
+		local adv = gui.section(parent, "Advanced (optional)")
+		gui.label(adv, "Only use if Easy mode doesn't find what you need. Manual probing can be risky.", 16, T.muted).TextSize = 11
 
-    local function populate()
-        for _, c in ipairs(list_host:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
-        end
-        local needle = filter_box.get()
-        local list = SD.cache.remotes
-        if needle and needle ~= "" then
-            list = SD.remotes_matching({ needle })
-        end
-        local shown = 0
-        for _, r in ipairs(list) do
-            if shown >= 60 then break end
-            shown = shown + 1
-            local b = gui.new("TextButton", {
-                Size = UDim2.new(1, 0, 0, 24),
-                BackgroundColor3 = T.panel,
-                AutoButtonColor = false,
-                Font = Enum.Font.Code,
-                TextSize = 11,
-                TextColor3 = T.text,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Text = "  " .. r.name,
-                Parent = list_host,
-            })
-            gui.corner(b, 5)
-            b.MouseButton1Click:Connect(function()
-                select(r)
-                for _, other in ipairs(list_host:GetChildren()) do
-                    if other:IsA("TextButton") then
-                        other.BackgroundColor3 = T.panel
-                    end
-                end
-                b.BackgroundColor3 = T.accent
-            end)
-        end
-        if shown == 0 then
-            local b = gui.new("TextButton", {
-                Size = UDim2.new(1, 0, 0, 24),
-                BackgroundColor3 = T.panel,
-                Text = "  no match",
-                Font = Enum.Font.Code,
-                TextSize = 11,
-                TextColor3 = T.muted,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                Parent = list_host,
-            })
-            gui.corner(b, 5)
-        end
-    end
+		gui.button(adv, {
+			text = "Dump recon to console",
+			callback = function() SD.dump(); SD.notify("Recon dumped (F9 console)", "ok") end,
+		})
 
-    gui.button(rem, {
-        text = "Scan / apply filter",
-        callback = function()
-            SD.refresh(true)
-            populate()
-            SD.notify(("%d remotes indexed"):format(#SD.cache.remotes), "ok")
-        end,
-    })
+		gui.button(adv, {
+			text = "Legacy auto-hunt (cash probe)",
+			callback = function() task.spawn(E.auto_hunt) end,
+		})
 
-    local args_box = gui.textbox(rem, {
-        text = "args",
-        default = "",
-        placeholder = "e.g. 1000  or  1,true",
-    })
+		gui.button(adv, {
+			text = "Prompt spoof (reach/hold)",
+			callback = function() SD.notify(("%d prompts patched"):format(E.prompt_spoof()), "ok") end,
+		})
 
-    gui.button(rem, {
-        text = "Fire selected",
-        callback = function()
-            if not E.selected then SD.notify("select a remote first", "warn") return end
-            local args = E.parse_args(args_box.get())
-            local ok, res = SD.probe_remote(E.selected, args)
-            SD.notify(("fired %s -> %s"):format(E.selected.name, tostring(ok)), ok and "ok" or "err")
-            if ok and res ~= nil then SD.log("result: " .. tostring(res)) end
-        end,
-    })
+		gui.button(adv, {
+			text = "Click detector reach",
+			callback = function() SD.notify(("%d detectors patched"):format(E.click_spoof()), "ok") end,
+		})
 
-    gui.button(rem, {
-        text = "Fuzz selected (13 payloads)",
-        color = T.panel2,
-        callback = function()
-            if not E.selected then SD.notify("select a remote first", "warn") return end
-            local results = E.fuzz(E.selected)
-            local gains = 0
-            for _, r in ipairs(results) do
-                if r.gain > 0 then gains = gains + 1 end
-            end
-            SD.notify(("fuzz done, %d paying payloads"):format(gains), gains > 0 and "ok" or "warn")
-        end,
-    })
+		gui.button(adv, {
+			text = "List client values (console)",
+			callback = function()
+				local list = E.client_values()
+				for _, v in ipairs(list) do SD.log(("  %s = %s"):format(v.path, tostring(v.value))) end
+				SD.notify(("%d values logged"):format(#list), "ok")
+			end,
+		})
 
-    gui.button(rem, {
-        text = "Cash-probe selected",
-        color = T.accent,
-        callback = function()
-            if not E.selected then SD.notify("select a remote first", "warn") return end
-            local gained, amount, err = E.cash_probe(E.selected, E.parse_args(args_box.get()))
-            if gained then
-                SD.notify(("PAYS OUT: +%s"):format(SD.fmt(amount)), "ok")
-            elseif err then
-                SD.notify("error: " .. err, "err")
-            else
-                SD.notify("no cash change", "warn")
-            end
-        end,
-    })
+		local val_name = gui.textbox(adv, { text = "value name", default = "", placeholder = "Cash" })
+		local val_val = gui.textbox(adv, { text = "set to", default = "", placeholder = "1000000" })
+		gui.button(adv, {
+			text = "Write matching client values (may be visual only)",
+			callback = function()
+				local v = tonumber(val_val.get())
+				if not v then SD.notify("Enter a number", "warn") return end
+				local n = E.write_value(val_name.get(), v)
+				SD.notify(("%d value(s) written"):format(n), n > 0 and "ok" or "warn")
+			end,
+		})
 
-    -- primitives
-    local prim = gui.section(parent, "Client-side primitives")
-    gui.label(prim, "Prompt and click config is server-replicated; hold time is not.", 16, T.muted).TextSize = 11
+		gui.button(adv, {
+			text = "Server hop",
+			callback = function() SD.features.server_hop() end,
+		})
 
-    gui.button(prim, {
-        text = "Prompt spoof (hold=0, infinite reach)",
-        callback = function()
-            local n = E.prompt_spoof()
-            SD.notify(("%d prompts patched"):format(n), n > 0 and "ok" or "warn")
-        end,
-    })
+		task.defer(function()
+			SD.refresh(true)
+			refresh_status()
+		end)
 
-    gui.button(prim, {
-        text = "Click detector reach",
-        callback = function()
-            local n = E.click_spoof()
-            SD.notify(("%d detectors patched"):format(n), n > 0 and "ok" or "warn")
-        end,
-    })
-
-    gui.toggle(prim, {
-        text = "Noclip",
-        default = false,
-        callback = function(v)
-            E.noclip(v)
-            if v then
-                SD.add_task("noclip", 0.2, function()
-                    if not E._noclip then return end
-                    local ch = SD.get_char()
-                    if not ch then return end
-                    for _, p in ipairs(ch:GetDescendants()) do
-                        if p:IsA("BasePart") then pcall(function() p.CanCollide = false end) end
-                    end
-                end)
-            end
-        end,
-    })
-
-    gui.button(prim, {
-        text = "God (client Health only)",
-        callback = function()
-            E.god()
-            SD.notify("health patched client-side", "warn")
-        end,
-    })
-
-    -- values
-    local vals = gui.section(parent, "Client values")
-    gui.label(vals, "If the server reads any of these back, writing them is the dupe.", 16, T.muted).TextSize = 11
-
-    gui.button(vals, {
-        text = "List writable values to console",
-        callback = function()
-            local list = E.client_values()
-            SD.log(("--- %d client values ---"):format(#list))
-            for _, v in ipairs(list) do
-                SD.log(("  %s = %s"):format(v.path, tostring(v.value)))
-            end
-            SD.notify(("%d values logged"):format(#list), "ok")
-        end,
-    })
-
-    local val_name = gui.textbox(vals, { text = "match", default = "", placeholder = "Cash" })
-    local val_val = gui.textbox(vals, { text = "value", default = "", placeholder = "1000000" })
-
-    gui.button(vals, {
-        text = "Write matching values",
-        callback = function()
-            local v = tonumber(val_val.get())
-            if not v then SD.notify("value must be a number", "warn") return end
-            local n = E.write_value(val_name.get(), v)
-            SD.notify(("%d values written"):format(n), n > 0 and "ok" or "warn")
-        end,
-    })
-
-    -- session
-    local sess = gui.section(parent, "Session")
-    gui.button(sess, {
-        text = "Server hop",
-        callback = function() SD.features.server_hop() end,
-    })
-    gui.button(sess, {
-        text = "Rejoin same server",
-        callback = function() SD.features.rejoin() end,
-    })
-    gui.button(sess, {
-        text = "Show discovered hits",
-        callback = function()
-            if #E.hits == 0 then SD.notify("no hits yet", "warn") return end
-            for _, h in ipairs(E.hits) do
-                SD.log(("[hit] %s  args=%s  +%s"):format(h.path, h.args, SD.fmt(h.gain)))
-            end
-            SD.notify(("%d hits in console"):format(#E.hits), "ok")
-        end,
-    })
-
-    task.defer(function()
-        SD.refresh(true)
-        populate()
-    end)
-
-    return populate
-end
+		local function populate() refresh_status() end
+		return populate
+	end
 
 SD.log("exploits loaded")
 
@@ -2727,7 +2891,12 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Automation")
+local auto = gui.section(grind, "Quick start")
+	gui.label(auto, "Auto-config runs on load. Just turn on what you need (uses YOUR plot).", 16, T.muted).TextSize = 11
+	gui.button(auto, {
+		text = "Run Auto-Configure again",
+		callback = function() pcall(function() SD.exploits.auto_configure() end) end,
+	})
 
 gui.toggle(auto, {
     text = "Auto sell",
@@ -2808,8 +2977,14 @@ gui.button(auto, {
     end,
 })
 
-local targets = gui.section(grind, "Target overrides")
-gui.label(targets, "Leave blank to use name heuristics.", 16, T.muted).TextSize = 11
+local targets = gui.section(grind, "Setup / target overrides")
+gui.label(targets, "Usually auto-detected. Set names only if a feature misses your plot's objects.", 16, T.muted).TextSize = 11
+
+gui.toggle(targets, {
+    text = "Only use MY plot (recommended)",
+    default = SD.config.only_my_plot,
+    callback = bind("only_my_plot"),
+})
 
 gui.textbox(targets, {
     text = "sell object",
@@ -2851,13 +3026,19 @@ local move = gui.tab("Move")
 local tps = gui.section(move, "Teleports")
 
 gui.toggle(tps, {
-    text = "Auto TP to crown",
+    text = "Auto TP to crown (only when crown event is active)",
     default = SD.config.tp_crown,
     callback = bind("tp_crown"),
 })
 
+gui.toggle(tps, {
+    text = "Only TP when a real crown is present",
+    default = SD.config.tp_crown_only_active,
+    callback = bind("tp_crown_only_active"),
+})
+
 gui.slider(tps, {
-    text = "Crown interval",
+    text = "Crown check interval",
     min = 0.5, max = 15, decimals = 1, suffix = "s",
     default = SD.config.tp_crown_delay,
     callback = bind("tp_crown_delay"),
@@ -2866,10 +3047,11 @@ gui.slider(tps, {
 gui.button(tps, {
     text = "TP to crown now",
     callback = function()
-        if SD.features.goto_crown() then
+        local ok = SD.features.goto_crown({ require_active = SD.config.tp_crown_only_active, allow_leader_fallback = not SD.config.tp_crown_only_active })
+        if ok then
             SD.notify("moved to crown", "ok")
         else
-            SD.notify("crown not found - set the name in Grind", "warn")
+            SD.notify(SD.config.tp_crown_only_active and "no active crown event/object right now" or "crown not found", "warn")
         end
     end,
 })
@@ -3116,33 +3298,39 @@ gui.button(store, {
 
 SD.features.register_tasks()
 
-SD.add_task("uptime", 1.0, function()
-    local up = os.time() - SD.state.session_start
-    info.Text = ("uptime %s   session +%s"):format(
-        SD.clock_str(up), SD.fmt(SD.state.session_earned)
-    )
-end)
+	SD.add_task("uptime", 1.0, function()
+	    local up = os.time() - SD.state.session_start
+	    local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
+	    local plotTxt = plot and (" | plot: " .. tostring(plot.Name)) or ""
+	    info.Text = ("uptime %s   session +%s%s"):format(
+	        SD.clock_str(up), SD.fmt(SD.state.session_earned), plotTxt
+	    )
+	end)
 
-local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
+	local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
 
-function SD.unload()
-    if heartbeat then heartbeat:Disconnect() end
-    SD.features.fullbright_restore()
-    SD.features.fps_boost_restore()
-    SD.exploits.noclip(false)
-    for _, bucket in pairs(SD.features.esp_store) do
-        for _, h in pairs(bucket) do
-            if h then pcall(function() h:Destroy() end) end
-        end
-    end
-    if SD.gui.root then SD.gui.root:Destroy() end
-    getgenv().SD = nil
-    print("[SD] unloaded")
-end
+	function SD.unload()
+	    if heartbeat then heartbeat:Disconnect() end
+	    SD.features.fullbright_restore()
+	    SD.features.fps_boost_restore()
+	    SD.exploits.noclip(false)
+	    for _, bucket in pairs(SD.features.esp_store) do
+	        for _, h in pairs(bucket) do
+	            if h then pcall(function() h:Destroy() end) end
+	        end
+	    end
+	    if SD.gui.root then SD.gui.root:Destroy() end
+	    getgenv().SD = nil
+	    print("[SD] unloaded")
+	end
 
-SD.features.bind_character()
-task.spawn(function() SD.refresh(true) end)
+	SD.features.bind_character()
+	task.spawn(function()
+		SD.refresh(true)
+		task.wait(0.2)
+		pcall(function() SD.exploits.auto_configure() end)
+	end)
 
-SD.notify("loaded - " .. SD.game_name, "ok")
-SD.log("booted. F9 for console, click 'Dump recon' to see the map of the game.")
+	SD.notify("Ready - enable Auto Sell / Auto Dig in Grind tab", "ok")
+	SD.log("booted. Auto-config ran. If something misses, set Target overrides in Grind.")
 

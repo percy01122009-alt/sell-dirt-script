@@ -200,21 +200,22 @@ function gui.build()
     })
     vlist(toast_host, 6)
 
-    -- floating opener
-    local opener = new("TextButton", {
-        AnchorPoint = Vector2.new(1, 0),
-        Position = UDim2.new(1, -14, 0, 44),
-        Size = UDim2.new(0, 46, 0, 46),
-        BackgroundColor3 = T.accent,
-        AutoButtonColor = false,
-        Font = FONT_BOLD,
-        TextSize = 13,
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        Text = "SD",
-        Parent = sg,
-    })
-    corner(opener, 14)
-    stroke(opener, Color3.fromRGB(160, 138, 255), 1)
+    -- floating opener (always visible: toggles show/hide)
+	    local opener = new("TextButton", {
+	        AnchorPoint = Vector2.new(1, 0),
+	        Position = UDim2.new(1, -14, 0, 44),
+	        Size = UDim2.new(0, 52, 0, 46),
+	        BackgroundColor3 = T.accent,
+	        AutoButtonColor = false,
+	        Font = FONT_BOLD,
+	        TextSize = 12,
+	        TextColor3 = Color3.fromRGB(255, 255, 255),
+	        Text = "SD",
+	        Parent = sg,
+	    })
+	    corner(opener, 14)
+	    stroke(opener, Color3.fromRGB(160, 138, 255), 1)
+	    gui.opener = opener
 
     -- main window
     local vp = viewport()
@@ -321,47 +322,61 @@ function gui.build()
     pad(body, 0, 10, 8, 10)
     gui.body = body
 
-    -- open / close
-    local function set_open(open)
-        win.Visible = open
-        opener.Visible = not open
-    end
-    opener.MouseButton1Click:Connect(function() set_open(true) end)
-    close.MouseButton1Click:Connect(function() set_open(false) end)
-    gui.set_open = set_open
+    -- open / close (opener stays visible and toggles)
+	    local function set_open(open)
+	        win.Visible = open and true or false
+	        opener.Visible = true
+	        opener.Text = win.Visible and "Hide" or "SD"
+	        opener.BackgroundColor3 = win.Visible and T.panel2 or T.accent
+	        opener.TextColor3 = win.Visible and T.text or Color3.fromRGB(255, 255, 255)
+	    end
+	    opener.MouseButton1Click:Connect(function() set_open(not win.Visible) end)
+	    close.MouseButton1Click:Connect(function() set_open(false) end)
+	    gui.set_open = set_open
 
-    -- drag
-    local dragging, drag_start, start_pos = false, nil, nil
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            drag_start = input.Position
-            start_pos = win.Position
-        end
-    end)
-    UIS.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement
-            and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local d = input.Position - drag_start
-        win.Position = UDim2.new(
-            start_pos.X.Scale, start_pos.X.Offset + d.X,
-            start_pos.Y.Scale, start_pos.Y.Offset + d.Y
-        )
-    end)
-    UIS.InputEnded:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-            local v = viewport()
-            local half = win.AbsoluteSize / 2
-            local cx = math.clamp(win.AbsolutePosition.X + half.X, half.X, v.X - half.X)
-            local cy = math.clamp(win.AbsolutePosition.Y + half.Y, half.Y, v.Y - half.Y)
-            win.Position = UDim2.fromOffset(cx, cy)
-        end
-    end)
+    -- drag (track the active input to avoid touch/mouse conflicts)
+	    local dragInput, dragStart, startPos = nil, nil, nil
+	    local function beginDrag(input)
+	        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+	            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	        -- don't drag when pressing the close button area
+	        local pos = input.Position
+	        local ap = close.AbsolutePosition
+	        local asz = close.AbsoluteSize
+	        if pos.X >= ap.X - 4 and pos.X <= ap.X + asz.X + 4
+	            and pos.Y >= ap.Y - 4 and pos.Y <= ap.Y + asz.Y + 4 then
+	            return
+	        end
+	        dragInput = input
+	        dragStart = input.Position
+	        startPos = win.Position
+	    end
+	    bar.InputBegan:Connect(beginDrag)
+	    close.InputBegan:Connect(function() dragInput = nil end)
+
+	    UIS.InputChanged:Connect(function(input)
+	        if input ~= dragInput then return end
+	        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+	            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+	        if not (dragStart and startPos) then return end
+	        local d = input.Position - dragStart
+	        win.Position = UDim2.new(
+	            startPos.X.Scale, startPos.X.Offset + d.X,
+	            startPos.Y.Scale, startPos.Y.Offset + d.Y
+	        )
+	    end)
+	    UIS.InputEnded:Connect(function(input)
+	        if input ~= dragInput then return end
+	        dragInput = nil
+	        local v = viewport()
+	        local half = win.AbsoluteSize
+	        local x = win.AbsolutePosition.X
+	        local y = win.AbsolutePosition.Y
+	        local margin = 8
+	        local nx = math.clamp(x, margin - half.X + 60, v.X - 60 - margin)
+	        local ny = math.clamp(y, margin, math.max(margin, v.Y - 44 - margin))
+	        win.Position = UDim2.fromOffset(nx, ny)
+	    end)
 
     -- tabs
     function gui.tab(name)

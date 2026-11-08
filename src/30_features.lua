@@ -10,13 +10,142 @@ local F = {}
 SD.features = F
 
 -- defaults that live here rather than in core (feature-local knobs)
-	if SD.config.sell_return == nil then SD.config.sell_return = true end
-	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-	if SD.config.esp_players == nil then SD.config.esp_players = false end
-	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
-	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
+		if SD.config.sell_return == nil then SD.config.sell_return = true end
+		if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
+		if SD.config.esp_players == nil then SD.config.esp_players = false end
+		if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
+		if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
+		if SD.config.only_my_plot == nil then SD.config.only_my_plot = true end
+		if SD.config.tp_crown_only_active == nil then SD.config.tp_crown_only_active = true end
 
--- rate gate ---------------------------------------------------------------
+-- plot ownership (fix: never interact with another player's plot) ---------
+
+	F._my_plot = nil
+	F._my_plot_at = 0
+
+	local function owner_matches_player(obj)
+		if not obj or not obj.Parent then return false end
+		local plr = SD.plr
+		if not plr then return false end
+		local name = plr.Name
+		local uid = plr.UserId
+
+		-- common attribute patterns
+		local okAttr, attrs = pcall(function() return obj:GetAttributes() end)
+		if okAttr and type(attrs) == "table" then
+			for k, v in pairs(attrs) do
+				local lk = string.lower(tostring(k))
+				if string.find(lk, "owner", 1, true) or string.find(lk, "user", 1, true) then
+					if v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then
+						return true
+					end
+					if typeof and typeof(v) == "Instance" and v == plr then return true end
+				end
+			end
+		end
+
+		-- ObjectValue/StringValue/IntValue owner markers
+		for _, key in ipairs({ "Owner", "owner", "Player", "player", "OwnerId", "UserId", "PlotOwner" }) do
+			local child = obj:FindFirstChild(key)
+			if child then
+				local ok, val = pcall(function() return child.Value end)
+				if ok then
+					if val == plr or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid) then
+						return true
+					end
+				end
+			end
+		end
+
+		return false
+	end
+
+	local function path_has_my_name(inst)
+		if not inst or not SD.plr then return false end
+		local ok, path = pcall(function() return inst:GetFullName() end)
+		if not ok or not path then return false end
+		return string.find(path, SD.plr.Name, 1, true) ~= nil
+	end
+
+	function F.my_plot()
+		if F._my_plot and F._my_plot.Parent and (os.clock() - F._my_plot_at) < 8 then
+			return F._my_plot
+		end
+		F._my_plot = nil
+
+		local roots = {}
+		for _, name in ipairs({ "Plots", "plots", "Tycoons", "tycoons", "Bases", "bases", "Islands", "islands", "Farms", "farms", "PlayerPlots" }) do
+			local r = workspace:FindFirstChild(name)
+			if r then roots[#roots + 1] = r end
+		end
+		if #roots == 0 then
+			-- scan top-level for plot-like containers
+			for _, c in ipairs(workspace:GetChildren()) do
+				local ln = string.lower(c.Name)
+				if string.find(ln, "plot", 1, true) or string.find(ln, "tycoon", 1, true) or string.find(ln, "base", 1, true) then
+					roots[#roots + 1] = c
+				end
+			end
+		end
+
+		for _, root in ipairs(roots) do
+			-- direct child named after player
+			local byName = root:FindFirstChild(SD.plr.Name)
+			if byName then F._my_plot = byName break end
+
+			for _, plot in ipairs(root:GetChildren()) do
+				if owner_matches_player(plot) or path_has_my_name(plot) then
+					F._my_plot = plot
+					break
+				end
+			end
+			if F._my_plot then break end
+		end
+
+		-- fallback: nearest plot-like model to spawn/character that has sell-like stuff? risky.
+		if F._my_plot then F._my_plot_at = os.clock() end
+		return F._my_plot
+	end
+
+	function F.is_mine(inst)
+		if not SD.config.only_my_plot then return true end
+		local plot = F.my_plot()
+		if not plot then return true end -- can't determine ownership: don't block everything
+		local obj = inst
+		if typeof(inst) == "Instance" then
+			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
+				obj = inst.Parent
+			end
+		end
+		if not obj then return true end
+		local ok, isDesc = pcall(function() return obj:IsDescendantOf(plot) end)
+		if ok and isDesc then return true end
+		-- allow if it's literally the plot or has our name
+		if path_has_my_name(obj) then return true end
+		-- check owner markers on ancestors up a bit
+		local cur = obj
+		for _ = 1, 6 do
+			if not cur or cur == workspace then break end
+			if owner_matches_player(cur) then return true end
+			cur = cur.Parent
+		end
+		return false
+	end
+
+	local function filter_mine(list)
+		if not SD.config.only_my_plot then return list end
+		local plot = F.my_plot()
+		if not plot then return list end
+		local out = {}
+		for _, v in ipairs(list) do
+			if F.is_mine(v) then out[#out + 1] = v end
+		end
+		-- if filtering removed everything, fall back to unfiltered to avoid breaking games without plot metadata
+		if #out == 0 then return list end
+		return out
+	end
+
+	-- rate gate ---------------------------------------------------------------
 
 local gates = {}
 function SD.gate(key, delay)
@@ -37,96 +166,139 @@ local REBIRTH_PATTERNS = { "rebirth", "prestige", "ascend", "reset" }
 local TOOL_PATTERNS   = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator" }
 
 function F.sell_target()
-    local custom = SD.config.sell_name
-    if custom and custom ~= "" then
-        local p = SD.find_parts({ custom })
-        if #p > 0 then return p[1] end
-        local pr = SD.prompts_matching({ custom })
-        if #pr > 0 then return pr[1] end
-    end
-    local pr = SD.prompts_matching(SELL_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(SELL_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    local parts = SD.find_parts(SELL_PATTERNS)
-    if #parts > 0 then return parts[1] end
-    local pr2 = SD.prompts_matching(SELL_FALLBACK)
-    if #pr2 > 0 then return pr2[1] end
-    return nil
-end
+	    local custom = SD.config.sell_name
+	    if custom and custom ~= "" then
+	        local p = filter_mine(SD.find_parts({ custom }))
+	        if #p > 0 then return p[1] end
+	        local pr = filter_mine(SD.prompts_matching({ custom }))
+	        if #pr > 0 then return pr[1] end
+	    end
+	    local pr = filter_mine(SD.prompts_matching(SELL_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(SELL_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    local parts = filter_mine(SD.find_parts(SELL_PATTERNS))
+	    if #parts > 0 then return parts[1] end
+	    local pr2 = filter_mine(SD.prompts_matching(SELL_FALLBACK))
+	    if #pr2 > 0 then return pr2[1] end
+	    -- if nothing in my plot matched, try unfiltered custom (user explicitly set it)
+	    if custom and custom ~= "" then
+	        local p = SD.find_parts({ custom })
+	        if #p > 0 then return p[1] end
+	    end
+	    return nil
+	end
 
 local crown_memo, crown_memo_at = nil, 0
 
-function F.crown_target()
-    if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 3 then
-        return crown_memo
-    end
+	local function crown_is_active(inst)
+		if not inst or not inst.Parent then return false end
+		-- must be in the live world, not a stored template
+		local okW, inWorld = pcall(function()
+			return inst:IsDescendantOf(workspace)
+		end)
+		if not okW or not inWorld then return false end
 
-    local found = nil
+		local function part_visible(p)
+			if not p or not p:IsA("BasePart") then return false end
+			if p.Transparency >= 0.98 then return false end
+			local okSize, sz = pcall(function() return p.Size end)
+			if okSize and sz and sz.Magnitude < 0.05 then return false end
+			return true
+		end
 
-    local custom = SD.config.crown_name
-    if custom and custom ~= "" then
-        local p = SD.find_parts({ custom })
-        if #p > 0 then found = p[1] end
-    end
+		if inst:IsA("BasePart") then
+			return part_visible(inst)
+		elseif inst:IsA("Model") then
+			if inst.PrimaryPart and part_visible(inst.PrimaryPart) then return true end
+			for _, d in ipairs(inst:GetDescendants()) do
+				if part_visible(d) then return true end
+			end
+			return false
+		end
 
-    if not found then
-        local parts = SD.find_parts(CROWN_PATTERNS)
-        if #parts > 0 then found = parts[1] end
-    end
+		local p = SD.resolve_part(inst)
+		return part_visible(p)
+	end
 
-    if not found then
-        local models = SD.find_models(CROWN_PATTERNS)
-        if #models > 0 then found = models[1] end
-    end
+	function F.crown_target(opts)
+		opts = opts or {}
+		local require_active = opts.require_active
+		if require_active == nil then require_active = SD.config.tp_crown_only_active end
 
-    -- last resort: the part carrying a BillboardGui that says "crown".
-    -- Gated — this walks every part and is only worth it a couple of times a minute.
-    if not found and SD.gate("crown_billboard_scan", 8) then
-        SD.refresh()
-        for _, p in ipairs(SD.cache.parts) do
-            local bb = p:FindFirstChildWhichIsA("BillboardGui", true)
-            if bb then
-                for _, d in ipairs(bb:GetDescendants()) do
-                    if d:IsA("TextLabel") and SD.match(d.Text, CROWN_PATTERNS) then
-                        found = p
-                        break
-                    end
-                end
-            end
-            if found then break end
-        end
-    end
+		if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 2 then
+			if (not require_active) or crown_is_active(crown_memo) then
+				return crown_memo
+			end
+			crown_memo = nil
+		end
 
-    if found then
-        crown_memo, crown_memo_at = found, os.clock()
-    end
-    return found
-end
+		local candidates = {}
+
+		local custom = SD.config.crown_name
+		if custom and custom ~= "" then
+			for _, p in ipairs(SD.find_parts({ custom })) do candidates[#candidates + 1] = p end
+			for _, m in ipairs(SD.find_models({ custom })) do candidates[#candidates + 1] = m end
+		end
+
+		for _, p in ipairs(SD.find_parts(CROWN_PATTERNS)) do candidates[#candidates + 1] = p end
+		for _, m in ipairs(SD.find_models(CROWN_PATTERNS)) do candidates[#candidates + 1] = m end
+
+		-- last resort: billboard text saying crown (gated)
+		if #candidates == 0 and SD.gate("crown_billboard_scan", 8) then
+			SD.refresh()
+			for _, p in ipairs(SD.cache.parts) do
+				local bb = p:FindFirstChildWhichIsA("BillboardGui", true)
+				if bb then
+					for _, d in ipairs(bb:GetDescendants()) do
+						if d:IsA("TextLabel") and SD.match(d.Text, CROWN_PATTERNS) then
+							candidates[#candidates + 1] = p
+							break
+						end
+					end
+				end
+				if #candidates > 0 then break end
+			end
+		end
+
+		local found = nil
+		for _, c in ipairs(candidates) do
+			if (not require_active) or crown_is_active(c) then
+				found = c
+				break
+			end
+		end
+
+		if found then
+			crown_memo, crown_memo_at = found, os.clock()
+		end
+		return found
+	end
 
 function F.dirt_target()
-    local hrp = SD.get_hrp()
-    local parts = SD.find_parts(DIRT_PATTERNS)
-    if #parts == 0 then return nil end
-    if not hrp then return parts[1] end
-    return (SD.nearest_part(parts, hrp.Position))
-end
+	    local hrp = SD.get_hrp()
+	    local parts = filter_mine(SD.find_parts(DIRT_PATTERNS))
+	    if #parts == 0 then parts = SD.find_parts(DIRT_PATTERNS) end
+	    if #parts == 0 then return nil end
+	    if not hrp then return parts[1] end
+	    return (SD.nearest_part(parts, hrp.Position))
+	end
 
 function F.upgrade_target()
-    local pr = SD.prompts_matching(UPGRADE_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(UPGRADE_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    return nil
-end
+	    local pr = filter_mine(SD.prompts_matching(UPGRADE_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(UPGRADE_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    return nil
+	end
 
-function F.rebirth_target()
-    local pr = SD.prompts_matching(REBIRTH_PATTERNS)
-    if #pr > 0 then return pr[1] end
-    local cd = SD.clicks_matching(REBIRTH_PATTERNS)
-    if #cd > 0 then return cd[1] end
-    return nil
-end
+	function F.rebirth_target()
+	    local pr = filter_mine(SD.prompts_matching(REBIRTH_PATTERNS))
+	    if #pr > 0 then return pr[1] end
+	    local cd = filter_mine(SD.clicks_matching(REBIRTH_PATTERNS))
+	    if #cd > 0 then return cd[1] end
+	    return nil
+	end
 
 function F.dig_tool()
     local ch = SD.get_char()
@@ -231,25 +403,27 @@ function F.fire_sell_remotes()
 	end
 
 function F.dig_click()
-    local hrp = SD.get_hrp()
-    if not hrp then return 0 end
-    SD.refresh()
-    local fired = 0
-    for _, c in ipairs(SD.cache.clicks) do
-        local part = SD.resolve_part(c)
-        if part then
-            local d = (part.Position - hrp.Position).Magnitude
-            if d <= 26 then
-                local pname = c.Parent and c.Parent.Name or ""
-                if SD.match(part.Name, DIRT_PATTERNS) or SD.match(pname, DIRT_PATTERNS) then
-                    pcall(fireclickdetector, c)
-                    fired = fired + 1
-                end
-            end
-        end
-    end
-    return fired
-end
+	    local hrp = SD.get_hrp()
+	    if not hrp then return 0 end
+	    SD.refresh()
+	    local fired = 0
+	    for _, c in ipairs(SD.cache.clicks) do
+	        if F.is_mine(c) then
+	            local part = SD.resolve_part(c)
+	            if part then
+	                local d = (part.Position - hrp.Position).Magnitude
+	                if d <= 26 then
+	                    local pname = c.Parent and c.Parent.Name or ""
+	                    if SD.match(part.Name, DIRT_PATTERNS) or SD.match(pname, DIRT_PATTERNS) then
+	                        pcall(fireclickdetector, c)
+	                        fired = fired + 1
+	                    end
+	                end
+	            end
+	        end
+	    end
+	    return fired
+	end
 
 function F.dig_once()
     local mode = SD.config.dig_mode or "both"
@@ -268,30 +442,49 @@ function F.dig_once()
     end
 
     if not acted and SD.caps.fireprompt then
-        local hrp = SD.get_hrp()
-        if hrp then
-            SD.refresh()
-            for _, p in ipairs(SD.cache.prompts) do
-                local part = SD.resolve_part(p)
-                if part and (part.Position - hrp.Position).Magnitude <= 22 then
-                    local pname = p.Parent and p.Parent.Name or ""
-                    if SD.match(pname, DIRT_PATTERNS) or SD.match(p.Name, DIRT_PATTERNS) then
-                        pcall(fireproximityprompt, p)
-                        acted = true
-                    end
-                end
-            end
-        end
-    end
+	        local hrp = SD.get_hrp()
+	        if hrp then
+	            SD.refresh()
+	            for _, p in ipairs(SD.cache.prompts) do
+	                if F.is_mine(p) then
+	                    local part = SD.resolve_part(p)
+	                    if part and (part.Position - hrp.Position).Magnitude <= 22 then
+	                        local pname = p.Parent and p.Parent.Name or ""
+	                        if SD.match(pname, DIRT_PATTERNS) or SD.match(p.Name, DIRT_PATTERNS) then
+	                            pcall(fireproximityprompt, p)
+	                            acted = true
+	                        end
+	                    end
+	                end
+	            end
+	        end
+	    end
 
     return acted
 end
 
 function F.collect_once()
-    local hrp = SD.get_hrp()
-    if not hrp then return 0 end
-    return SD.interact_near(hrp.Position, 40)
-end
+	    local hrp = SD.get_hrp()
+	    if not hrp then return 0 end
+	    -- interact_near is global in core; do a plot-aware pass first
+	    local n = 0
+	    if SD.caps.fireprompt then
+	        SD.refresh()
+	        for _, p in ipairs(SD.cache.prompts) do
+	            if F.is_mine(p) then
+	                local part = SD.resolve_part(p)
+	                if part and (part.Position - hrp.Position).Magnitude <= 40 then
+	                    local ok = pcall(fireproximityprompt, p)
+	                    if ok then n = n + 1 end
+	                end
+	            end
+	        end
+	    end
+	    if n == 0 then
+	        n = SD.interact_near(hrp.Position, 40)
+	    end
+	    return n
+	end
 
 function F.upgrade_once()
     local t = F.upgrade_target()
@@ -309,26 +502,34 @@ function F.rebirth_once()
     return ok
 end
 
-function F.goto_crown()
-    local t = F.crown_target()
-    if not t then
-        -- crown may live on the leaderboard leader
-        local lead = F.leader()
-        if lead then
-            local ch = lead.Character
-            if ch then
-                local hrp = ch:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    SD.tp(hrp.CFrame * CFrame.new(0, 0, 3))
-                    return true
-                end
-            end
-        end
-        return false
-    end
-    local ok, fired = F.visit(t, { radius = 18, settle = 0.25, anchor = false })
-    return ok
-end
+function F.goto_crown(opts)
+		opts = opts or {}
+		local require_active = opts.require_active
+		if require_active == nil then require_active = SD.config.tp_crown_only_active end
+
+		local t = F.crown_target({ require_active = require_active })
+		if not t then
+			-- Only fall back to leaderboard leader when the user explicitly allows
+			-- non-event behavior (manual override). Auto TP must not chase players
+			-- when no crown event/object is active.
+			if not require_active and opts.allow_leader_fallback then
+				local lead = F.leader()
+				if lead then
+					local ch = lead.Character
+					if ch then
+						local hrp = ch:FindFirstChild("HumanoidRootPart")
+						if hrp then
+							SD.tp(hrp.CFrame * CFrame.new(0, 0, 3))
+							return true
+						end
+					end
+				end
+			end
+			return false
+		end
+		local ok = F.visit(t, { radius = 18, settle = 0.25, anchor = false })
+		return ok
+	end
 
 function F.leader()
     local best, bestv = nil, -math.huge

@@ -42,7 +42,12 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Automation")
+local auto = gui.section(grind, "Quick start")
+	gui.label(auto, "Auto-config runs on load. Just turn on what you need (uses YOUR plot).", 16, T.muted).TextSize = 11
+	gui.button(auto, {
+		text = "Run Auto-Configure again",
+		callback = function() pcall(function() SD.exploits.auto_configure() end) end,
+	})
 
 gui.toggle(auto, {
     text = "Auto sell",
@@ -123,8 +128,14 @@ gui.button(auto, {
     end,
 })
 
-local targets = gui.section(grind, "Target overrides")
-gui.label(targets, "Leave blank to use name heuristics.", 16, T.muted).TextSize = 11
+local targets = gui.section(grind, "Setup / target overrides")
+gui.label(targets, "Usually auto-detected. Set names only if a feature misses your plot's objects.", 16, T.muted).TextSize = 11
+
+gui.toggle(targets, {
+    text = "Only use MY plot (recommended)",
+    default = SD.config.only_my_plot,
+    callback = bind("only_my_plot"),
+})
 
 gui.textbox(targets, {
     text = "sell object",
@@ -166,13 +177,19 @@ local move = gui.tab("Move")
 local tps = gui.section(move, "Teleports")
 
 gui.toggle(tps, {
-    text = "Auto TP to crown",
+    text = "Auto TP to crown (only when crown event is active)",
     default = SD.config.tp_crown,
     callback = bind("tp_crown"),
 })
 
+gui.toggle(tps, {
+    text = "Only TP when a real crown is present",
+    default = SD.config.tp_crown_only_active,
+    callback = bind("tp_crown_only_active"),
+})
+
 gui.slider(tps, {
-    text = "Crown interval",
+    text = "Crown check interval",
     min = 0.5, max = 15, decimals = 1, suffix = "s",
     default = SD.config.tp_crown_delay,
     callback = bind("tp_crown_delay"),
@@ -181,10 +198,11 @@ gui.slider(tps, {
 gui.button(tps, {
     text = "TP to crown now",
     callback = function()
-        if SD.features.goto_crown() then
+        local ok = SD.features.goto_crown({ require_active = SD.config.tp_crown_only_active, allow_leader_fallback = not SD.config.tp_crown_only_active })
+        if ok then
             SD.notify("moved to crown", "ok")
         else
-            SD.notify("crown not found - set the name in Grind", "warn")
+            SD.notify(SD.config.tp_crown_only_active and "no active crown event/object right now" or "crown not found", "warn")
         end
     end,
 })
@@ -431,32 +449,38 @@ gui.button(store, {
 
 SD.features.register_tasks()
 
-SD.add_task("uptime", 1.0, function()
-    local up = os.time() - SD.state.session_start
-    info.Text = ("uptime %s   session +%s"):format(
-        SD.clock_str(up), SD.fmt(SD.state.session_earned)
-    )
-end)
+	SD.add_task("uptime", 1.0, function()
+	    local up = os.time() - SD.state.session_start
+	    local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
+	    local plotTxt = plot and (" | plot: " .. tostring(plot.Name)) or ""
+	    info.Text = ("uptime %s   session +%s%s"):format(
+	        SD.clock_str(up), SD.fmt(SD.state.session_earned), plotTxt
+	    )
+	end)
 
-local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
+	local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
 
-function SD.unload()
-    if heartbeat then heartbeat:Disconnect() end
-    SD.features.fullbright_restore()
-    SD.features.fps_boost_restore()
-    SD.exploits.noclip(false)
-    for _, bucket in pairs(SD.features.esp_store) do
-        for _, h in pairs(bucket) do
-            if h then pcall(function() h:Destroy() end) end
-        end
-    end
-    if SD.gui.root then SD.gui.root:Destroy() end
-    getgenv().SD = nil
-    print("[SD] unloaded")
-end
+	function SD.unload()
+	    if heartbeat then heartbeat:Disconnect() end
+	    SD.features.fullbright_restore()
+	    SD.features.fps_boost_restore()
+	    SD.exploits.noclip(false)
+	    for _, bucket in pairs(SD.features.esp_store) do
+	        for _, h in pairs(bucket) do
+	            if h then pcall(function() h:Destroy() end) end
+	        end
+	    end
+	    if SD.gui.root then SD.gui.root:Destroy() end
+	    getgenv().SD = nil
+	    print("[SD] unloaded")
+	end
 
-SD.features.bind_character()
-task.spawn(function() SD.refresh(true) end)
+	SD.features.bind_character()
+	task.spawn(function()
+		SD.refresh(true)
+		task.wait(0.2)
+		pcall(function() SD.exploits.auto_configure() end)
+	end)
 
-SD.notify("loaded - " .. SD.game_name, "ok")
-SD.log("booted. F9 for console, click 'Dump recon' to see the map of the game.")
+	SD.notify("Ready - enable Auto Sell / Auto Dig in Grind tab", "ok")
+	SD.log("booted. Auto-config ran. If something misses, set Target overrides in Grind.")
