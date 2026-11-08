@@ -41,6 +41,8 @@ gui.toggle(main, { text = "Auto Sell (works from anywhere)", default = SD.config
 gui.toggle(main, { text = "Auto Collect (pickups/board, skips extractor)", default = SD.config.auto_collect, callback = bind("auto_collect") })
 gui.toggle(main, { text = "Auto Dig", default = SD.config.auto_dig, callback = bind("auto_dig") })
 gui.toggle(main, { text = "Auto Crown (TP only when a real crown event is active)", default = SD.config.auto_crown, callback = bind("auto_crown") })
+gui.toggle(main, { text = "Auto Upgrade (in-game currency only, safe)", default = SD.config.auto_upgrade, callback = bind("auto_upgrade") })
+gui.toggle(main, { text = "Auto Rebirth (DANGEROUS - resets progress)", default = SD.config.auto_rebirth, callback = bind("auto_rebirth") })
 
 local speedSec = gui.section(farm, "Speed")
 gui.slider(speedSec, { text = "Sell delay", min = 0.5, max = 10, decimals = 1, suffix = "s", default = SD.config.sell_delay, callback = bindNum("sell_delay") })
@@ -49,9 +51,10 @@ gui.slider(speedSec, { text = "Dig delay", min = 0.05, max = 2, decimals = 2, su
 gui.slider(speedSec, { text = "Crown check", min = 0.3, max = 5, decimals = 1, suffix = "s", default = SD.config.crown_delay, callback = bindNum("crown_delay") })
 
 local actions = gui.section(farm, "Quick actions")
-gui.button(actions, { text = "Sell Now", callback = function() local ok = F.sell_once(); SD.notify(ok and "Sell triggered" or ("Sell not found: " .. tostring(F.status.sell)), ok and "ok" or "warn") end })
+gui.button(actions, { text = "Sell Now", callback = function() local ok = F.sell_once(); SD.notify(ok and "Sell triggered" or ("Sell: " .. tostring(F.status.sell)), ok and "ok" or "warn") end })
 gui.button(actions, { text = "Collect Now", callback = function() local n = F.collect_once(); SD.notify("Collected " .. tostring(n) .. " prompt(s)", n > 0 and "ok" or "warn") end })
 gui.button(actions, { text = "TP to Crown Now (only if active)", callback = function() local ok = F.goto_crown(); SD.notify(ok and "Teleported to crown" or "No active crown event right now", ok and "ok" or "warn") end })
+gui.button(actions, { text = "Buy Upgrades Now (safe, my plot)", callback = function() local n = F.buy_upgrades_once(); SD.notify("Upgrade prompts triggered: " .. tostring(n), n > 0 and "ok" or "warn") end })
 gui.button(actions, { text = "Scan Game / Detect Plot", callback = function() pcall(function() SD.exploits.auto_configure() end) end })
 
 -- PLAYER TAB ----------------------------------------------------------------
@@ -115,9 +118,10 @@ SD.add_task("ui_status", 1.0, function()
 	local up = os.time() - SD.state.session_start
 	pcall(F.my_plot)
 	local s = F.status or {}
-	statusLabel.Text = ("Up %s | earned +%s | plot %s\nSell: %s | Collect: %s | Dig: %s | Crown: %s"):format(
+	statusLabel.Text = ("Up %s | earned +%s | plot %s\nSell:%s Collect:%s Dig:%s Crown:%s\nUpgrade:%s Rebirth:%s"):format(
 		SD.clock_str(up), SD.fmt(SD.state.session_earned), tostring(s.plot or "?"),
-		tostring(s.sell or "off"), tostring(s.collect or "off"), tostring(s.dig or "off"), tostring(s.crown or "off")
+		tostring(s.sell or "off"), tostring(s.collect or "off"), tostring(s.dig or "off"), tostring(s.crown or "off"),
+		tostring(s.upgrade or "off"), tostring(s.rebirth or "off")
 	)
 end)
 
@@ -134,11 +138,16 @@ if SD.plr then
 		overlay.ChildAdded:Connect(function(child)
 			if not SD.config.auto_rejoin or SD.state.rejoin_guard then return end
 			if child.Name == "ErrorPrompt" then
-				SD.state.rejoin_guard = true
-				task.delay(1.5, function()
-					pcall(function() SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr) end)
-				end)
-			end
+					SD.state.rejoin_guard = true
+					task.delay(1.5, function()
+						-- AFK recovery: queue script for next server if supported
+						local url = rawget(getgenv(), "SD_LOADSTRING_URL")
+						if SD.caps.queue_teleport and type(url) == "string" and url ~= "" then
+							pcall(function() queue_on_teleport(("loadstring(game:HttpGet(%q))()"):format(url)) end)
+						end
+						pcall(function() SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr) end)
+					end)
+				end
 		end)
 	end
 end

@@ -37,13 +37,13 @@ dflt("sell_object", "")
 dflt("crown_object", "")
 dflt("dig_tool", "")
 
-F.status = { sell = "off", collect = "off", dig = "off", crown = "off", plot = "?" }
+F.status = { sell = "off", collect = "off", dig = "off", crown = "off", upgrade = "off", rebirth = "off", plot = "?" }
 F._plot, F._plotAt = nil, 0
 F._crown, F._crownAt = nil, 0
 F.esp = { crown = {}, players = {} }
 
-local P = SD.Players
-local LP = SD.plr
+local function LP() return SD.plr end
+local function P() return SD.Players end
 
 local function now() return os.clock() end
 local function lower(s) return string.lower(tostring(s or "")) end
@@ -91,15 +91,16 @@ SD.is_risky = F.is_risky
 
 -- plot ownership ------------------------------------------------------------
 local function owner_matches(obj)
-	if not obj or not obj.Parent or not LP then return false end
-	local name, uid = LP.Name, LP.UserId
+	local plr = LP()
+	if not obj or not obj.Parent or not plr then return false end
+	local name, uid = plr.Name, plr.UserId
 	local okA, attrs = pcall(function() return obj:GetAttributes() end)
 	if okA and type(attrs) == "table" then
 		for k, v in pairs(attrs) do
 			local lk = lower(k)
 			if has(lk, "owner") or has(lk, "user") then
-				if v == LP or v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then return true end
-				if typeof and typeof(v) == "Instance" and v == LP then return true end
+				if v == plr or v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then return true end
+			if typeof and typeof(v) == "Instance" and v == plr then return true end
 			end
 		end
 	end
@@ -107,7 +108,7 @@ local function owner_matches(obj)
 		local ch = obj:FindFirstChild(key)
 		if ch then
 			local ok, val = pcall(function() return ch.Value end)
-			if ok and (val == LP or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid)) then return true end
+		if ok and (val == plr or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid)) then return true end
 		end
 	end
 	return false
@@ -116,7 +117,7 @@ end
 function F.my_plot()
 	if F._plot and F._plot.Parent and (now() - F._plotAt) < 10 then return F._plot end
 	F._plot = nil
-	if not LP then return nil end
+	local plr = LP(); if not plr then return nil end
 	local roots = {}
 	for _, name in ipairs({ "Plots", "Tycoons", "Bases", "Islands", "Farms", "PlayerPlots", "plots", "tycoons" }) do
 		local r = workspace:FindFirstChild(name)
@@ -129,7 +130,7 @@ function F.my_plot()
 		end
 	end
 	for _, root in ipairs(roots) do
-		local by = root:FindFirstChild(LP.Name)
+		local by = root:FindFirstChild(plr.Name)
 		if by then F._plot = by; break end
 		for _, plot in ipairs(root:GetChildren()) do
 			if owner_matches(plot) then F._plot = plot; break end
@@ -151,7 +152,7 @@ function F.is_mine(inst)
 	if not obj then return true end
 	local ok, desc = pcall(function() return obj:IsDescendantOf(plot) end)
 	if ok and desc then return true end
-	pcall(function() if has(obj:GetFullName(), LP.Name) then desc = true end end)
+	local plr = LP(); pcall(function() if plr and has(obj:GetFullName(), plr.Name) then desc = true end end)
 	if desc == true then return true end
 	local cur = obj
 	for _ = 1, 6 do
@@ -169,8 +170,9 @@ local function crown_excluded(inst)
 	for _, b in ipairs({ "feedback","report","suggest","complaint","donate","shop","setting","menu","gui","screen","interface","statue","decoration","spawnlocation","npc" }) do
 		if has(p, b) then return true end
 	end
-	if P then
-		for _, plr in ipairs(P:GetPlayers()) do
+	local Ps = P()
+	if Ps then
+		for _, plr in ipairs(Ps:GetPlayers()) do
 			local ch = plr.Character
 			if ch then
 				local okD, isD = pcall(function() return inst:IsDescendantOf(ch) end)
@@ -252,11 +254,24 @@ local function safe_remote(r)
 end
 
 function F.sell_once()
-	-- explicit override
+	-- explicit remote override
 	local ovr = SD.config.sell_remote
 	if ovr and ovr ~= "" then
 		for _, r in ipairs(SD.remotes_matching({ ovr })) do
 			if safe_remote(r) and SD.probe_remote(r, {}) then F.status.sell = "remote OK"; return true end
+		end
+	end
+	-- explicit sell object name override (my plot only)
+	local objOvr = SD.config.sell_object
+	if objOvr and objOvr ~= "" and SD.caps.fireprompt then
+		SD.refresh()
+		for _, p in ipairs(SD.cache.prompts or {}) do
+			if F.is_mine(p) and not F.is_risky(p) then
+				local pn = lower(p.Name or ""); local par = p.Parent and lower(p.Parent.Name or "") or ""
+				if has(pn, objOvr) or has(par, objOvr) then
+					if pcall(fireproximityprompt, p) then F.status.sell = "sold (override)"; return true end
+				end
+			end
 		end
 	end
 
@@ -334,7 +349,7 @@ function F.dig_tool()
 	local pats = (custom and custom ~= "") and { custom } or TOOL_PATTERNS
 	local eq = ch:FindFirstChildOfClass("Tool")
 	if eq and SD.match(eq.Name, pats) then return eq end
-	local bp = LP and LP:FindFirstChild("Backpack")
+	local plr = LP(); local bp = plr and plr:FindFirstChild("Backpack")
 	if bp then
 		for _, t in ipairs(bp:GetChildren()) do
 			if t:IsA("Tool") and SD.match(t.Name, pats) then
@@ -369,16 +384,47 @@ function F.dig_once()
 	return acted
 end
 
--- upgrades (manual/safe) ----------------------------------------------------
+-- upgrades / rebirth (optional, off by default) ----------------------------
+local UPGRADE_NAMES = { "upgrade", "level up", "levelup", "improve", "enhance" }
+local REBIRTH_NAMES = { "rebirth", "prestige", "ascend", "ascension" }
+local function safe_plot_prompt(p, names)
+	if not p or not F.is_mine(p) or F.is_risky(p) then return false end
+	local txt = lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or "") .. " " .. (p.Parent and p.Parent.Name or ""))
+	if hasAny(txt, { "robux","gamepass","devproduct","buy","purchase","donate" }) then return false end
+	return hasAny(txt, names)
+end
+
 function F.buy_upgrades_once()
+	if not SD.caps.fireprompt then F.status.upgrade = "no prompt support"; return 0 end
 	SD.refresh()
 	local n = 0
-	for _, p in ipairs(SD.prompts_matching({ "upgrade", "level up", "improve" }) or {}) do
-		if F.is_mine(p) and not F.is_risky(p) then
+	for _, p in ipairs(SD.cache.prompts or {}) do
+		if safe_plot_prompt(p, UPGRADE_NAMES) then
 			if pcall(fireproximityprompt, p) then n = n + 1 end
 		end
 	end
-	F.status.upgrades = n > 0 and ("triggered " .. n) or "none found"
+	if n == 0 then
+		for _, p in ipairs(SD.prompts_matching(UPGRADE_NAMES) or {}) do
+			if safe_plot_prompt(p, UPGRADE_NAMES) then
+				if pcall(fireproximityprompt, p) then n = n + 1 end
+			end
+		end
+	end
+	F.status.upgrade = n > 0 and ("triggered " .. n) or "none found"
+	return n
+end
+
+function F.rebirth_once()
+	-- DANGEROUS by design when enabled: only safe rebirth/prestige prompts on my plot, no robux
+	if not SD.caps.fireprompt then F.status.rebirth = "no prompt support"; return 0 end
+	SD.refresh()
+	local n = 0
+	for _, p in ipairs(SD.cache.prompts or {}) do
+		if safe_plot_prompt(p, REBIRTH_NAMES) then
+			if pcall(fireproximityprompt, p) then n = n + 1 end
+		end
+	end
+	F.status.rebirth = n > 0 and ("triggered " .. n) or "none found"
 	return n
 end
 
@@ -394,7 +440,7 @@ local function espAdd(bucket, key, adornee, color)
 	h.OutlineTransparency = 0
 	h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	h.Adornee = adornee
-	h.Parent = SD.gui and SD.gui.root or LP:FindFirstChild("PlayerGui")
+	local plr = LP(); h.Parent = SD.gui and SD.gui.root or (plr and plr:FindFirstChild("PlayerGui"))
 	F.esp[bucket][key] = h
 end
 local function espClear(bucket)
@@ -408,9 +454,10 @@ function F.esp_tick()
 	else espClear("crown") end
 	if SD.config.esp_players then
 		local seen = {}
-		if P then
-			for _, plr in ipairs(P:GetPlayers()) do
-				if plr ~= LP and plr.Character then
+		local Ps, me = P(), LP()
+		if Ps then
+			for _, plr in ipairs(Ps:GetPlayers()) do
+				if plr ~= me and plr.Character then
 					seen[plr.Name] = true
 					espAdd("players", plr.Name, plr.Character, Color3.fromRGB(255, 110, 120))
 				end
@@ -493,6 +540,14 @@ function F.register_tasks()
 		if not SD.config.auto_crown or SD.state.paused or not SD.alive() then F.status.crown = SD.config.auto_crown and "paused" or "off"; return end
 		if gate("crown", tonumber(SD.config.crown_delay) or 0.75) then F.goto_crown() end
 	end)
+	SD.add_task("upgrade", 0.5, function()
+		if not SD.config.auto_upgrade or SD.state.paused or not SD.alive() then F.status.upgrade = SD.config.auto_upgrade and "paused" or "off"; return end
+		if gate("upgrade", 8.0) then F.buy_upgrades_once() end
+	end)
+	SD.add_task("rebirth", 1.0, function()
+		if not SD.config.auto_rebirth or SD.state.paused or not SD.alive() then F.status.rebirth = SD.config.auto_rebirth and "paused" or "off"; return end
+		if gate("rebirth", 15.0) then F.rebirth_once() end
+	end)
 	SD.add_task("speed", 0.25, function() F.apply_speed() end)
 	SD.add_task("esp", 0.9, function() F.esp_tick() end)
 	SD.add_task("stats", 0.5, function()
@@ -511,7 +566,7 @@ function F.bind_character()
 	if SD.config.noclip then F.set_noclip(true) end
 end
 
-if LP then LP.CharacterAdded:Connect(function() task.wait(0.4); F.bind_character() end) end
+local plr = LP(); if plr then plr.CharacterAdded:Connect(function() task.wait(0.4); F.bind_character() end) end
 F.my_plot()
 
 SD.log("features v3 loaded")
