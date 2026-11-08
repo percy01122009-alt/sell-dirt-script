@@ -10,7 +10,7 @@
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "1.0.0"
+SD.version   = "2.0.0"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)
@@ -1506,14 +1506,18 @@ local SD = getgenv().SD
 local F = {}
 SD.features = F
 
--- defaults that live here rather than in core (feature-local knobs)
-		if SD.config.sell_return == nil then SD.config.sell_return = true end
-		if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-		if SD.config.esp_players == nil then SD.config.esp_players = false end
-		if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
-		if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
-		if SD.config.only_my_plot == nil then SD.config.only_my_plot = true end
-		if SD.config.tp_crown_only_active == nil then SD.config.tp_crown_only_active = true end
+-- defaults (safe "cheat" behavior: no robux purchases, minimal teleporting)
+	if SD.config.sell_return == nil then SD.config.sell_return = false end
+	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
+	if SD.config.esp_players == nil then SD.config.esp_players = false end
+	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
+	if SD.config.auto_sell_teleport == nil then SD.config.auto_sell_teleport = false end
+	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
+	if SD.config.only_my_plot == nil then SD.config.only_my_plot = true end
+	if SD.config.tp_crown_only_active == nil then SD.config.tp_crown_only_active = true end
+	if SD.config.auto_upgrade == nil then SD.config.auto_upgrade = false end -- off: can spend in-game currency unexpectedly
+	if SD.config.auto_rebirth == nil then SD.config.auto_rebirth = false end -- off: destructive
+	if SD.config.safe_mode == nil then SD.config.safe_mode = true end
 
 -- plot ownership (fix: never interact with another player's plot) ---------
 
@@ -1652,38 +1656,80 @@ function SD.gate(key, delay)
     return true
 end
 
--- target resolution -------------------------------------------------------
+-- safety: never trigger robux/gamepass/devproduct/purchase flows
+	local function is_risky_action(inst)
+		local texts = {}
+		local function add(v)
+			if type(v) == "string" and v ~= "" then texts[#texts + 1] = string.lower(v) end
+		end
+		if typeof(inst) == "Instance" then
+			add(inst.Name)
+			local ok, path = pcall(function() return inst:GetFullName() end)
+			if ok then add(path) end
+			if inst:IsA("ProximityPrompt") then
+				pcall(function() add(inst.ActionText) end)
+				pcall(function() add(inst.ObjectText) end)
+			end
+			local parent = inst.Parent
+			if parent then
+				add(parent.Name)
+				for _, d in ipairs(parent:GetDescendants()) do
+					if d:IsA("TextLabel") or d:IsA("TextButton") then
+						pcall(function() add(d.Text) end)
+					end
+					if #texts > 18 then break end
+				end
+			end
+		end
+		local bad = { "robux", "gamepass", "game pass", "devproduct", "developer product", "donate", "donation", "premium", "vip pass" }
+		for _, t in ipairs(texts) do
+			for _, b in ipairs(bad) do
+				if string.find(t, b, 1, true) then return true end
+			end
+			-- avoid obvious purchase prompts unless clearly "sell"
+			if string.find(t, "buy", 1, true) and not string.find(t, "sell", 1, true) then
+				if SD.config.safe_mode then return true end
+			end
+		end
+		return false
+	end
 
-local SELL_PATTERNS   = { "sell", "cashout", "cash out", "exchange", "turn in" }
-local SELL_FALLBACK   = { "market", "shop", "store", "vendor", "trade", "deposit" }
-local CROWN_PATTERNS  = { "crown" }
-local DIRT_PATTERNS   = { "dirt", "soil", "mud", "ore", "rock pile" }
-local UPGRADE_PATTERNS = { "upgrade", "improve", "buy", "purchase", "level" }
-local REBIRTH_PATTERNS = { "rebirth", "prestige", "ascend", "reset" }
-local TOOL_PATTERNS   = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator" }
+	-- target resolution -------------------------------------------------------
+
+	local SELL_PATTERNS   = { "sell", "cashout", "cash out", "exchange", "turn in", "deposit" }
+	local SELL_FALLBACK   = {} -- removed: shop/store/vendor caused bad teleports
+	local CROWN_PATTERNS  = { "crown" }
+	local DIRT_PATTERNS   = { "dirt", "soil", "mud", "ore", "rock pile", "dig" }
+	local UPGRADE_PATTERNS = { "upgrade", "level up", "levelup", "improve" } -- no "buy/purchase" by default
+	local REBIRTH_PATTERNS = { "rebirth", "prestige", "ascend" } -- no generic "reset"
+	local TOOL_PATTERNS   = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator" }
+
+	local function safe_filter(list)
+		local out = {}
+		for _, v in ipairs(list) do
+			if not is_risky_action(v) then out[#out + 1] = v end
+		end
+		return out
+	end
 
 function F.sell_target()
-	    local custom = SD.config.sell_name
-	    if custom and custom ~= "" then
-	        local p = filter_mine(SD.find_parts({ custom }))
-	        if #p > 0 then return p[1] end
-	        local pr = filter_mine(SD.prompts_matching({ custom }))
-	        if #pr > 0 then return pr[1] end
-	    end
-	    local pr = filter_mine(SD.prompts_matching(SELL_PATTERNS))
-	    if #pr > 0 then return pr[1] end
-	    local cd = filter_mine(SD.clicks_matching(SELL_PATTERNS))
-	    if #cd > 0 then return cd[1] end
-	    local parts = filter_mine(SD.find_parts(SELL_PATTERNS))
-	    if #parts > 0 then return parts[1] end
-	    local pr2 = filter_mine(SD.prompts_matching(SELL_FALLBACK))
-	    if #pr2 > 0 then return pr2[1] end
-	    -- if nothing in my plot matched, try unfiltered custom (user explicitly set it)
-	    if custom and custom ~= "" then
-	        local p = SD.find_parts({ custom })
-	        if #p > 0 then return p[1] end
-	    end
-	    return nil
+		local custom = SD.config.sell_name
+		if custom and custom ~= "" then
+			local pr = safe_filter(filter_mine(SD.prompts_matching({ custom })))
+			if #pr > 0 then return pr[1] end
+			local cd = safe_filter(filter_mine(SD.clicks_matching({ custom })))
+			if #cd > 0 then return cd[1] end
+			local p = safe_filter(filter_mine(SD.find_parts({ custom })))
+			if #p > 0 then return p[1] end
+		end
+		-- prompts/clicks are safer than teleporting to arbitrary parts
+		local pr = safe_filter(filter_mine(SD.prompts_matching(SELL_PATTERNS)))
+		if #pr > 0 then return pr[1] end
+		local cd = safe_filter(filter_mine(SD.clicks_matching(SELL_PATTERNS)))
+		if #cd > 0 then return cd[1] end
+		local parts = safe_filter(filter_mine(SD.find_parts(SELL_PATTERNS)))
+		if #parts > 0 then return parts[1] end
+		return nil
 	end
 
 local crown_memo, crown_memo_at = nil, 0
@@ -1782,19 +1828,19 @@ function F.dirt_target()
 	end
 
 function F.upgrade_target()
-	    local pr = filter_mine(SD.prompts_matching(UPGRADE_PATTERNS))
-	    if #pr > 0 then return pr[1] end
-	    local cd = filter_mine(SD.clicks_matching(UPGRADE_PATTERNS))
-	    if #cd > 0 then return cd[1] end
-	    return nil
+		local pr = safe_filter(filter_mine(SD.prompts_matching(UPGRADE_PATTERNS)))
+		if #pr > 0 then return pr[1] end
+		local cd = safe_filter(filter_mine(SD.clicks_matching(UPGRADE_PATTERNS)))
+		if #cd > 0 then return cd[1] end
+		return nil
 	end
 
 	function F.rebirth_target()
-	    local pr = filter_mine(SD.prompts_matching(REBIRTH_PATTERNS))
-	    if #pr > 0 then return pr[1] end
-	    local cd = filter_mine(SD.clicks_matching(REBIRTH_PATTERNS))
-	    if #cd > 0 then return cd[1] end
-	    return nil
+		local pr = safe_filter(filter_mine(SD.prompts_matching(REBIRTH_PATTERNS)))
+		if #pr > 0 then return pr[1] end
+		local cd = safe_filter(filter_mine(SD.clicks_matching(REBIRTH_PATTERNS)))
+		if #cd > 0 then return cd[1] end
+		return nil
 	end
 
 function F.dig_tool()
@@ -1824,24 +1870,31 @@ end
 -- movement helpers --------------------------------------------------------
 
 function F.visit(inst, opts)
-    opts = opts or {}
-    local part = SD.resolve_part(inst)
-    if not part then return false, 0 end
-    local hrp = SD.get_hrp()
-    if not hrp then return false, 0 end
+		opts = opts or {}
+		if is_risky_action(inst) then return false, 0 end
+		local part = SD.resolve_part(inst)
+		if not part then return false, 0 end
+		local hrp = SD.get_hrp()
+		if not hrp then return false, 0 end
 
-    if opts.anchor ~= false and not SD.state.anchor then
-        SD.state.anchor = hrp.CFrame
-    end
+		if opts.allow_teleport == false then
+			local fired = SD.interact(inst)
+			if fired == 0 then fired = SD.interact_near(part.Position, opts.radius or 16) end
+			return fired > 0, fired
+		end
 
-    local offset = CFrame.new(0, opts.y_offset or 3, 0)
-    SD.tp(part.CFrame * offset)
-    task.wait(opts.settle or 0.22)
+		if opts.anchor ~= false and not SD.state.anchor then
+			SD.state.anchor = hrp.CFrame
+		end
 
-    local fired = SD.interact_near(part.Position, opts.radius or 16)
-    if fired == 0 then fired = SD.interact(inst) end
-    return true, fired
-end
+		local offset = CFrame.new(0, opts.y_offset or 3, 0)
+		SD.tp(part.CFrame * offset)
+		task.wait(opts.settle or 0.22)
+
+		local fired = SD.interact_near(part.Position, opts.radius or 16)
+		if fired == 0 then fired = SD.interact(inst) end
+		return true, fired
+	end
 
 function F.return_home()
     if SD.state.anchor then SD.tp(SD.state.anchor) end
@@ -1850,51 +1903,65 @@ end
 -- core actions ------------------------------------------------------------
 
 function F.fire_sell_remotes()
-		-- Fire remotes that look like sell/cashout. Useful when the game uses a
-		-- RemoteEvent instead of a physical sell zone. Silent and rate-gated by caller.
-		local names = { "sell", "cashout", "cash out", "exchange", "deposit", "turnin", "turn in" }
+		-- Fire sell/cashout remotes (no teleporting). Prefer this over physical zones.
+		local names = { "sell", "cashout", "cash out", "exchange", "deposit", "turnin", "turn in", "selldirt", "dirt" }
 		local list = SD.remotes_matching(names)
 		local fired = 0
 		for _, r in ipairs(list) do
-			-- avoid obviously dangerous global actions
-			local n = string.lower(r.name or "")
-			if not (string.find(n, "rebirth", 1, true) or string.find(n, "prestige", 1, true) or string.find(n, "reset", 1, true)) then
+			local n = string.lower((r.name or "") .. " " .. (r.path or ""))
+			-- block dangerous/destructive or purchase-like remotes
+			local blocked = string.find(n, "rebirth", 1, true)
+				or string.find(n, "prestige", 1, true)
+				or string.find(n, "reset", 1, true)
+				or string.find(n, "buy", 1, true)
+				or string.find(n, "purchase", 1, true)
+				or string.find(n, "robux", 1, true)
+				or string.find(n, "gamepass", 1, true)
+				or string.find(n, "devproduct", 1, true)
+			if not blocked then
 				local ok = SD.probe_remote(r, {})
-				if ok then fired = fired + 1 end
+				if ok then
+					fired = fired + 1
+					-- don't spam every matching remote every tick; a couple is enough
+					if fired >= 2 then break end
+				end
+				task.wait(0.05)
 			end
 		end
 		return fired
 	end
 
 	function F.sell_once()
+		-- 1) explicit sell remote override (no teleport)
 		local rname = SD.config.sell_remote
 		if rname and rname ~= "" then
 			local list = SD.remotes_matching({ rname })
 			if #list > 0 then
-				local ok, err = SD.probe_remote(list[1], {})
-				if not ok then SD.warn("sell remote failed: " .. tostring(err)) end
-				return ok
+				local n = string.lower(list[1].name or "")
+				if not (string.find(n, "buy", 1, true) or string.find(n, "robux", 1, true) or string.find(n, "gamepass", 1, true)) then
+					local ok = pcall(function() SD.probe_remote(list[1], {}) end)
+					return ok
+				end
 			end
 		end
 
+		-- 2) remote-first (default, no teleporting/spamming)
+		if SD.config.auto_sell_remote_fallback ~= false then
+			if F.fire_sell_remotes() > 0 then return true end
+		end
+
+		-- 3) optional teleport to a *safe, my-plot* sell target (OFF by default)
+		if not SD.config.auto_sell_teleport then
+			return false
+		end
+		if not SD.gate("sell_tp", math.max(4, (SD.config.auto_sell_delay or 2) * 2)) then
+			return false
+		end
 		local target = F.sell_target()
-		if target then
-			local ok, fired = F.visit(target, { radius = 18, settle = 0.25 })
-			if ok then
-				if fired == 0 then
-					-- prompt may need a hold; try the raw prompt API on the object itself
-					SD.interact(target)
-				end
-				if SD.config.sell_return then
-					task.delay(0.4, F.return_home)
-				end
-				return true
-			end
-		end
-
-		-- fallback: some Sell Dirt variants are remote-driven with no physical zone
-		if SD.config.auto_sell_remote_fallback then
-			return F.fire_sell_remotes() > 0
+		if target and F.is_mine(target) and not is_risky_action(target) then
+			local ok = F.visit(target, { radius = 16, settle = 0.2, allow_teleport = true, anchor = not SD.config.sell_return })
+			if ok and SD.config.sell_return then task.delay(0.35, F.return_home) end
+			return ok
 		end
 		return false
 	end
@@ -1984,20 +2051,20 @@ function F.collect_once()
 	end
 
 function F.upgrade_once()
-    local t = F.upgrade_target()
-    if not t then return false end
-    local ok = F.visit(t, { radius = 16, settle = 0.2 })
-    if SD.config.sell_return then task.delay(0.4, F.return_home) end
-    return ok
-end
+		if SD.config.safe_mode then return false end -- upgrades can spend in-game currency; enable explicitly by disabling safe mode? safer to keep opt-in via config
+		local t = F.upgrade_target()
+		if not t then return false end
+		local ok = F.visit(t, { radius = 16, settle = 0.2, allow_teleport = SD.config.auto_sell_teleport == true }) -- reuse teleport permission concept? better separate
+		return ok
+	end
 
-function F.rebirth_once()
-    local t = F.rebirth_target()
-    if not t then return false end
-    local ok = F.visit(t, { radius = 16, settle = 0.2 })
-    if SD.config.sell_return then task.delay(0.4, F.return_home) end
-    return ok
-end
+	function F.rebirth_once()
+		-- destructive: only when explicitly enabled (auto_rebirth toggle controls scheduling)
+		local t = F.rebirth_target()
+		if not t then return false end
+		local ok = F.visit(t, { radius = 16, settle = 0.2, allow_teleport = false })
+		return ok
+	end
 
 function F.goto_crown(opts)
 		opts = opts or {}
@@ -2891,95 +2958,86 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Quick start")
-	gui.label(auto, "Auto-config runs on load. Just turn on what you need (uses YOUR plot).", 16, T.muted).TextSize = 11
-	gui.button(auto, {
-		text = "Run Auto-Configure again",
-		callback = function() pcall(function() SD.exploits.auto_configure() end) end,
-	})
+local auto = gui.section(grind, "Main (turn on and play)")
+gui.label(auto, "Auto-config runs on load. Auto Sell uses remotes (no teleport by default) and only your plot.", 16, T.muted).TextSize = 11
+gui.button(auto, {
+	text = "Run Auto-Setup again",
+	callback = function() pcall(function() SD.exploits.auto_configure() end) end,
+})
 
 gui.toggle(auto, {
-    text = "Auto sell",
+    text = "Auto Sell (safe, no robux)",
     default = SD.config.auto_sell,
     callback = bind("auto_sell"),
 })
 
-gui.slider(auto, {
-    text = "Sell interval",
-    min = 0.5, max = 12, decimals = 1, suffix = "s",
-    default = SD.config.auto_sell_delay,
-    callback = bind("auto_sell_delay"),
-})
-
 gui.toggle(auto, {
-    text = "Return to dig spot after selling",
-    default = SD.config.sell_return,
-    callback = bind("sell_return"),
-})
-
-gui.toggle(auto, {
-    text = "Remote sell fallback (if no sell zone found)",
-    default = SD.config.auto_sell_remote_fallback,
-    callback = bind("auto_sell_remote_fallback"),
-})
-
-gui.toggle(auto, {
-    text = "Auto dig",
+    text = "Auto Dig",
     default = SD.config.auto_dig,
     callback = bind("auto_dig"),
 })
 
+gui.toggle(auto, {
+    text = "Auto Collect nearby (my plot)",
+    default = SD.config.auto_collect,
+    callback = bind("auto_collect"),
+})
+
+gui.toggle(auto, {
+    text = "Auto Upgrade (in-game only, can spend game cash)",
+    default = SD.config.auto_upgrade,
+    callback = bind("auto_upgrade"),
+})
+
+gui.toggle(auto, {
+    text = "Auto Rebirth/Prestige (DANGEROUS: resets progress)",
+    default = SD.config.auto_rebirth,
+    callback = bind("auto_rebirth"),
+})
+
 gui.slider(auto, {
-    text = "Dig interval",
+    text = "Sell speed",
+    min = 0.8, max = 12, decimals = 1, suffix = "s",
+    default = SD.config.auto_sell_delay,
+    callback = bind("auto_sell_delay"),
+})
+
+gui.slider(auto, {
+    text = "Dig speed",
     min = 0.05, max = 2, decimals = 2, suffix = "s",
     default = SD.config.auto_dig_delay,
     callback = bind("auto_dig_delay"),
 })
 
-gui.dropdown(auto, {
+gui.button(auto, {
+    text = "Sell Now",
+    callback = function()
+        local ok = SD.features.sell_once()
+        SD.notify(ok and "Sell triggered" or "Couldn't sell yet (try Auto-Setup / Sell remote in Setup)", ok and "ok" or "warn")
+    end,
+})
+
+local adv = gui.section(grind, "Advanced (usually not needed)")
+gui.toggle(adv, {
+    text = "Teleport to sell zone (OFF recommended - can bug/TP wrong)",
+    default = SD.config.auto_sell_teleport,
+    callback = bind("auto_sell_teleport"),
+})
+
+gui.toggle(adv, {
+    text = "Return after sell teleport",
+    default = SD.config.sell_return,
+    callback = bind("sell_return"),
+})
+
+gui.dropdown(adv, {
     text = "Dig method",
     options = { "both", "tool", "click" },
     default = SD.config.dig_mode,
     callback = bind("dig_mode"),
 })
 
-gui.toggle(auto, {
-    text = "Auto collect (fire nearby prompts)",
-    default = SD.config.auto_collect,
-    callback = bind("auto_collect"),
-})
-
-gui.toggle(auto, {
-    text = "Auto upgrade",
-    default = SD.config.auto_upgrade,
-    callback = bind("auto_upgrade"),
-})
-
-gui.toggle(auto, {
-    text = "Auto rebirth / prestige",
-    default = SD.config.auto_rebirth,
-    callback = bind("auto_rebirth"),
-})
-
-gui.button(auto, {
-    text = "Sell now",
-    callback = function()
-        local ok = SD.features.sell_once()
-        SD.notify(ok and "sell triggered" or "sell target not found (check overrides / Exploit tab)", ok and "ok" or "warn")
-    end,
-})
-
-gui.button(auto, {
-    text = "Fire sell-like remotes now",
-    callback = function()
-        local n = SD.features.fire_sell_remotes()
-        SD.notify(("fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
-    end,
-})
-
-local targets = gui.section(grind, "Setup / target overrides")
-gui.label(targets, "Usually auto-detected. Set names only if a feature misses your plot's objects.", 16, T.muted).TextSize = 11
-
+local targets = gui.section(grind, "Setup (only if auto-detect misses)")
 gui.toggle(targets, {
     text = "Only use MY plot (recommended)",
     default = SD.config.only_my_plot,
@@ -2987,82 +3045,67 @@ gui.toggle(targets, {
 })
 
 gui.textbox(targets, {
-    text = "sell object",
+    text = "Sell remote name",
+    default = SD.config.sell_remote,
+    placeholder = "auto-detected",
+    callback = bind("sell_remote"),
+})
+
+gui.textbox(targets, {
+    text = "Sell object name",
     default = SD.config.sell_name,
-    placeholder = "SellZone",
+    placeholder = "leave blank",
     callback = bind("sell_name"),
 })
 
 gui.textbox(targets, {
-    text = "crown object",
-    default = SD.config.crown_name,
-    placeholder = "Crown",
-    callback = bind("crown_name"),
-})
-
-gui.textbox(targets, {
-    text = "dig tool",
+    text = "Dig tool name",
     default = SD.config.dig_tool_name,
     placeholder = "Shovel",
     callback = bind("dig_tool_name"),
-})
-
-gui.textbox(targets, {
-    text = "sell remote",
-    default = SD.config.sell_remote,
-    placeholder = "SellDirt",
-    callback = bind("sell_remote"),
-})
-
-gui.button(targets, {
-    text = "Dump recon to console",
-    callback = function() SD.dump() end,
 })
 
 -- MOVEMENT -----------------------------------------------------------------
 
 local move = gui.tab("Move")
 
-local tps = gui.section(move, "Teleports")
+local tps = gui.section(move, "Crown (automatic)")
+gui.label(tps, "Auto TP only moves when a real crown/event object is active.", 16, T.muted).TextSize = 11
 
 gui.toggle(tps, {
-    text = "Auto TP to crown (only when crown event is active)",
+    text = "Auto TP to Crown (only during active crown event)",
     default = SD.config.tp_crown,
     callback = bind("tp_crown"),
 })
 
-gui.toggle(tps, {
-    text = "Only TP when a real crown is present",
-    default = SD.config.tp_crown_only_active,
-    callback = bind("tp_crown_only_active"),
-})
-
 gui.slider(tps, {
-    text = "Crown check interval",
+    text = "Crown check speed",
     min = 0.5, max = 15, decimals = 1, suffix = "s",
     default = SD.config.tp_crown_delay,
     callback = bind("tp_crown_delay"),
 })
 
 gui.button(tps, {
-    text = "TP to crown now",
+    text = "TP to Crown Now (if active)",
     callback = function()
-        local ok = SD.features.goto_crown({ require_active = SD.config.tp_crown_only_active, allow_leader_fallback = not SD.config.tp_crown_only_active })
+        local ok = SD.features.goto_crown({ require_active = true })
         if ok then
-            SD.notify("moved to crown", "ok")
+            SD.notify("Moved to active crown", "ok")
         else
-            SD.notify(SD.config.tp_crown_only_active and "no active crown event/object right now" or "crown not found", "warn")
+            SD.notify("No active crown/event right now", "warn")
         end
     end,
 })
 
-gui.button(tps, {
-    text = "TP to sell zone",
+local misc_tp = gui.section(move, "Other teleports")
+
+gui.button(misc_tp, {
+    text = "TP to sell zone (my plot)",
     callback = function()
         if SD.features.goto_sell() then
             SD.notify("moved to sell zone", "ok")
         else
-            SD.notify("sell zone not found - set the name in Grind", "warn")
+            SD.notify("sell zone not found (Auto Sell remote mode doesn't need this)", "warn")
         end
     end,
 })

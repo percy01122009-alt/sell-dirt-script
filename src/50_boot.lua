@@ -42,95 +42,86 @@ end
 
 local grind = gui.tab("Grind")
 
-local auto = gui.section(grind, "Quick start")
-	gui.label(auto, "Auto-config runs on load. Just turn on what you need (uses YOUR plot).", 16, T.muted).TextSize = 11
-	gui.button(auto, {
-		text = "Run Auto-Configure again",
-		callback = function() pcall(function() SD.exploits.auto_configure() end) end,
-	})
+local auto = gui.section(grind, "Main (turn on and play)")
+gui.label(auto, "Auto-config runs on load. Auto Sell uses remotes (no teleport by default) and only your plot.", 16, T.muted).TextSize = 11
+gui.button(auto, {
+	text = "Run Auto-Setup again",
+	callback = function() pcall(function() SD.exploits.auto_configure() end) end,
+})
 
 gui.toggle(auto, {
-    text = "Auto sell",
+    text = "Auto Sell (safe, no robux)",
     default = SD.config.auto_sell,
     callback = bind("auto_sell"),
 })
 
-gui.slider(auto, {
-    text = "Sell interval",
-    min = 0.5, max = 12, decimals = 1, suffix = "s",
-    default = SD.config.auto_sell_delay,
-    callback = bind("auto_sell_delay"),
-})
-
 gui.toggle(auto, {
-    text = "Return to dig spot after selling",
-    default = SD.config.sell_return,
-    callback = bind("sell_return"),
-})
-
-gui.toggle(auto, {
-    text = "Remote sell fallback (if no sell zone found)",
-    default = SD.config.auto_sell_remote_fallback,
-    callback = bind("auto_sell_remote_fallback"),
-})
-
-gui.toggle(auto, {
-    text = "Auto dig",
+    text = "Auto Dig",
     default = SD.config.auto_dig,
     callback = bind("auto_dig"),
 })
 
+gui.toggle(auto, {
+    text = "Auto Collect nearby (my plot)",
+    default = SD.config.auto_collect,
+    callback = bind("auto_collect"),
+})
+
+gui.toggle(auto, {
+    text = "Auto Upgrade (in-game only, can spend game cash)",
+    default = SD.config.auto_upgrade,
+    callback = bind("auto_upgrade"),
+})
+
+gui.toggle(auto, {
+    text = "Auto Rebirth/Prestige (DANGEROUS: resets progress)",
+    default = SD.config.auto_rebirth,
+    callback = bind("auto_rebirth"),
+})
+
 gui.slider(auto, {
-    text = "Dig interval",
+    text = "Sell speed",
+    min = 0.8, max = 12, decimals = 1, suffix = "s",
+    default = SD.config.auto_sell_delay,
+    callback = bind("auto_sell_delay"),
+})
+
+gui.slider(auto, {
+    text = "Dig speed",
     min = 0.05, max = 2, decimals = 2, suffix = "s",
     default = SD.config.auto_dig_delay,
     callback = bind("auto_dig_delay"),
 })
 
-gui.dropdown(auto, {
+gui.button(auto, {
+    text = "Sell Now",
+    callback = function()
+        local ok = SD.features.sell_once()
+        SD.notify(ok and "Sell triggered" or "Couldn't sell yet (try Auto-Setup / Sell remote in Setup)", ok and "ok" or "warn")
+    end,
+})
+
+local adv = gui.section(grind, "Advanced (usually not needed)")
+gui.toggle(adv, {
+    text = "Teleport to sell zone (OFF recommended - can bug/TP wrong)",
+    default = SD.config.auto_sell_teleport,
+    callback = bind("auto_sell_teleport"),
+})
+
+gui.toggle(adv, {
+    text = "Return after sell teleport",
+    default = SD.config.sell_return,
+    callback = bind("sell_return"),
+})
+
+gui.dropdown(adv, {
     text = "Dig method",
     options = { "both", "tool", "click" },
     default = SD.config.dig_mode,
     callback = bind("dig_mode"),
 })
 
-gui.toggle(auto, {
-    text = "Auto collect (fire nearby prompts)",
-    default = SD.config.auto_collect,
-    callback = bind("auto_collect"),
-})
-
-gui.toggle(auto, {
-    text = "Auto upgrade",
-    default = SD.config.auto_upgrade,
-    callback = bind("auto_upgrade"),
-})
-
-gui.toggle(auto, {
-    text = "Auto rebirth / prestige",
-    default = SD.config.auto_rebirth,
-    callback = bind("auto_rebirth"),
-})
-
-gui.button(auto, {
-    text = "Sell now",
-    callback = function()
-        local ok = SD.features.sell_once()
-        SD.notify(ok and "sell triggered" or "sell target not found (check overrides / Exploit tab)", ok and "ok" or "warn")
-    end,
-})
-
-gui.button(auto, {
-    text = "Fire sell-like remotes now",
-    callback = function()
-        local n = SD.features.fire_sell_remotes()
-        SD.notify(("fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
-    end,
-})
-
-local targets = gui.section(grind, "Setup / target overrides")
-gui.label(targets, "Usually auto-detected. Set names only if a feature misses your plot's objects.", 16, T.muted).TextSize = 11
-
+local targets = gui.section(grind, "Setup (only if auto-detect misses)")
 gui.toggle(targets, {
     text = "Only use MY plot (recommended)",
     default = SD.config.only_my_plot,
@@ -138,82 +129,67 @@ gui.toggle(targets, {
 })
 
 gui.textbox(targets, {
-    text = "sell object",
+    text = "Sell remote name",
+    default = SD.config.sell_remote,
+    placeholder = "auto-detected",
+    callback = bind("sell_remote"),
+})
+
+gui.textbox(targets, {
+    text = "Sell object name",
     default = SD.config.sell_name,
-    placeholder = "SellZone",
+    placeholder = "leave blank",
     callback = bind("sell_name"),
 })
 
 gui.textbox(targets, {
-    text = "crown object",
-    default = SD.config.crown_name,
-    placeholder = "Crown",
-    callback = bind("crown_name"),
-})
-
-gui.textbox(targets, {
-    text = "dig tool",
+    text = "Dig tool name",
     default = SD.config.dig_tool_name,
     placeholder = "Shovel",
     callback = bind("dig_tool_name"),
-})
-
-gui.textbox(targets, {
-    text = "sell remote",
-    default = SD.config.sell_remote,
-    placeholder = "SellDirt",
-    callback = bind("sell_remote"),
-})
-
-gui.button(targets, {
-    text = "Dump recon to console",
-    callback = function() SD.dump() end,
 })
 
 -- MOVEMENT -----------------------------------------------------------------
 
 local move = gui.tab("Move")
 
-local tps = gui.section(move, "Teleports")
+local tps = gui.section(move, "Crown (automatic)")
+gui.label(tps, "Auto TP only moves when a real crown/event object is active.", 16, T.muted).TextSize = 11
 
 gui.toggle(tps, {
-    text = "Auto TP to crown (only when crown event is active)",
+    text = "Auto TP to Crown (only during active crown event)",
     default = SD.config.tp_crown,
     callback = bind("tp_crown"),
 })
 
-gui.toggle(tps, {
-    text = "Only TP when a real crown is present",
-    default = SD.config.tp_crown_only_active,
-    callback = bind("tp_crown_only_active"),
-})
-
 gui.slider(tps, {
-    text = "Crown check interval",
+    text = "Crown check speed",
     min = 0.5, max = 15, decimals = 1, suffix = "s",
     default = SD.config.tp_crown_delay,
     callback = bind("tp_crown_delay"),
 })
 
 gui.button(tps, {
-    text = "TP to crown now",
+    text = "TP to Crown Now (if active)",
     callback = function()
-        local ok = SD.features.goto_crown({ require_active = SD.config.tp_crown_only_active, allow_leader_fallback = not SD.config.tp_crown_only_active })
+        local ok = SD.features.goto_crown({ require_active = true })
         if ok then
-            SD.notify("moved to crown", "ok")
+            SD.notify("Moved to active crown", "ok")
         else
-            SD.notify(SD.config.tp_crown_only_active and "no active crown event/object right now" or "crown not found", "warn")
+            SD.notify("No active crown/event right now", "warn")
         end
     end,
 })
 
-gui.button(tps, {
-    text = "TP to sell zone",
+local misc_tp = gui.section(move, "Other teleports")
+
+gui.button(misc_tp, {
+    text = "TP to sell zone (my plot)",
     callback = function()
         if SD.features.goto_sell() then
             SD.notify("moved to sell zone", "ok")
         else
-            SD.notify("sell zone not found - set the name in Grind", "warn")
+            SD.notify("sell zone not found (Auto Sell remote mode doesn't need this)", "warn")
         end
     end,
 })
