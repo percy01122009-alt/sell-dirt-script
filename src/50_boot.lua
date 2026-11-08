@@ -50,7 +50,7 @@ gui.button(auto, {
 })
 
 gui.toggle(auto, {
-    text = "Auto Sell (safe, no robux)",
+    text = "Auto Sell (works from anywhere, safe, no robux)",
     default = SD.config.auto_sell,
     callback = bind("auto_sell"),
 })
@@ -62,7 +62,7 @@ gui.toggle(auto, {
 })
 
 gui.toggle(auto, {
-    text = "Auto Collect nearby (my plot)",
+    text = "Auto Collect board/pickups (my plot, works from anywhere)",
     default = SD.config.auto_collect,
     callback = bind("auto_collect"),
 })

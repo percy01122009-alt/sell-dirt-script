@@ -10,7 +10,7 @@
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "2.2.2"
+SD.version   = "2.3.0"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)

@@ -491,46 +491,45 @@ function F.fire_sell_remotes()
 		return true
 	end
 
+	local function safe_sell_remote(r)
+		if not r then return false end
+		local n = string.lower((r.name or "") .. " " .. (r.path or ""))
+		if string.find(n, "autosell", 1, true) or string.find(n, "auto sell", 1, true) or string.find(n, "auto_sell", 1, true) then return false end
+		if string.find(n, "toggle", 1, true) then return false end
+		if string.find(n, "gamepass", 1, true) or string.find(n, "robux", 1, true) or string.find(n, "devproduct", 1, true) then return false end
+		if string.find(n, "buy", 1, true) or string.find(n, "purchase", 1, true) then return false end
+		if string.find(n, "promptpurchase", 1, true) or string.find(n, "marketplace", 1, true) then return false end
+		return true
+	end
+
 	function F.sell_once()
-		-- 1) explicit sell remote override (no teleport) - only if clearly a sell remote
+		-- 1) explicit sell remote override (no teleport)
 		local rname = SD.config.sell_remote
 		if rname and rname ~= "" then
 			local list = SD.remotes_matching({ rname })
 			for _, r in ipairs(list) do
-				local n = string.lower((r.name or "") .. " " .. (r.path or ""))
-				if string.find(n, "autosell", 1, true) or string.find(n, "gamepass", 1, true) or string.find(n, "robux", 1, true) or string.find(n, "buy", 1, true) then
-					-- skip dangerous match
-				else
+				if safe_sell_remote(r) then
 					local ok = SD.probe_remote(r, {})
 					if ok then return true end
 				end
 			end
 		end
 
-		-- 2) fire the actual sell prompt on MY plot from anywhere (no teleport needed)
+		-- 2) fire actual sell prompts on MY plot from ANY distance (executor fireproximityprompt)
 		if SD.caps.fireprompt then
 			SD.refresh()
 			local candidates = {}
 			for _, p in ipairs(SD.cache.prompts) do
-				if F.is_mine(p) and is_real_sell_prompt(p) then
-					candidates[#candidates + 1] = p
-				end
+				if F.is_mine(p) and is_real_sell_prompt(p) then candidates[#candidates + 1] = p end
 			end
-			-- also try name-based matches filtered strictly
 			if #candidates == 0 then
 				for _, p in ipairs(SD.prompts_matching(SELL_PATTERNS)) do
 					if F.is_mine(p) and is_real_sell_prompt(p) then candidates[#candidates + 1] = p end
 				end
 			end
 			if #candidates > 0 then
-				-- fire the best candidate (prefer one whose parent/path looks like sell booth)
-				table.sort(candidates, function(a, b)
-					local ap = (a.Parent and a.Parent:GetFullName() or "")
-					local bp = (b.Parent and b.Parent:GetFullName() or "")
-					return #ap < #bp
-				end)
 				local fired = 0
-				for i = 1, math.min(2, #candidates) do
+				for i = 1, math.min(3, #candidates) do
 					local ok = pcall(fireproximityprompt, candidates[i])
 					if ok then fired = fired + 1 end
 				end
@@ -538,29 +537,35 @@ function F.fire_sell_remotes()
 			end
 		end
 
-		-- 3) click detectors on my plot (safe)
+		-- 3) click detectors on my plot (any distance)
 		if SD.caps.fireclick then
 			SD.refresh()
 			for _, c in ipairs(SD.clicks_matching(SELL_PATTERNS)) do
-				if F.is_mine(c) and not is_risky_action(c) then
-					local parent = c.Parent and string.lower(c.Parent.Name or "") or ""
-					if not (string.find(parent, "autosell", 1, true) or string.find(parent, "gamepass", 1, true)) then
-						local ok = pcall(fireclickdetector, c)
-						if ok then return true end
-					end
+				if F.is_mine(c) and not is_risky_action(c) and safe_sell_remote({ name = c.Name or "", path = c.Parent and c.Parent:GetFullName() or c.Name or "" }) then
+					local ok = pcall(fireclickdetector, c)
+					if ok then return true end
 				end
 			end
 		end
 
-		-- 4) strict remote fallback (only very clear sell remotes)
+		-- 4) strict sell remotes (try several common names/patterns)
 		if SD.config.auto_sell_remote_fallback ~= false then
-			local names = { "selldirt", "sell_dirt", "sellall", "sell_all", "cashout", "cash_out" }
-			local list = SD.remotes_matching(names)
-			for _, r in ipairs(list) do
-				local n = string.lower((r.name or "") .. " " .. (r.path or ""))
-				if not (string.find(n, "autosell", 1, true) or string.find(n, "gamepass", 1, true) or string.find(n, "robux", 1, true) or string.find(n, "buy", 1, true) or string.find(n, "toggle", 1, true)) then
-					local ok = SD.probe_remote(r, {})
-					if ok then return true end
+			local tries = {
+				{ "selldirt", "sell_dirt", "sellall", "sell_all" },
+				{ "sell", "cashout", "cash_out", "deposit" },
+			}
+			for _, names in ipairs(tries) do
+				local list = SD.remotes_matching(names)
+				for _, r in ipairs(list) do
+					if safe_sell_remote(r) then
+						-- prefer remotes explicitly about selling
+						local n = string.lower(r.name or "")
+						local looks = string.find(n, "sell", 1, true) or string.find(n, "cash", 1, true) or string.find(n, "deposit", 1, true)
+						if looks then
+							local ok = SD.probe_remote(r, {})
+							if ok then return true end
+						end
+					end
 				end
 			end
 		end
@@ -569,7 +574,7 @@ function F.fire_sell_remotes()
 		if not SD.config.auto_sell_teleport then return false end
 		if not SD.gate("sell_tp", math.max(5, (SD.config.auto_sell_delay or 2) * 2)) then return false end
 		local target = F.sell_target()
-		if target and F.is_mine(target) and is_real_sell_prompt(target) then
+		if target and F.is_mine(target) and (is_real_sell_prompt(target) or not is_risky_action(target)) then
 			local ok = F.visit(target, { radius = 16, settle = 0.2, allow_teleport = true, anchor = false })
 			return ok
 		end
@@ -638,34 +643,27 @@ function F.dig_once()
 end
 
 function F.collect_once()
-		local hrp = SD.get_hrp()
-		if not hrp then return 0 end
 		local n = 0
-		if SD.caps.fireprompt then
-			SD.refresh()
-			for _, p in ipairs(SD.cache.prompts) do
-				if F.is_mine(p) and not is_risky_action(p) then
-					local pname = string.lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or ""))
-					local parentName = p.Parent and string.lower(p.Parent.Name or "") or ""
-					local path = ""
-					pcall(function() path = string.lower(p:GetFullName()) end)
-					local text = pname .. " " .. parentName .. " " .. path
-					-- collect is for pickups/drops/rewards/balls only - NEVER sell/upgrade
-					local looks_sell = string.find(text, "sell", 1, true) or string.find(text, "cashout", 1, true) or string.find(text, "exchange", 1, true)
-					local looks_upgrade = string.find(text, "upgrade", 1, true) or string.find(text, "buy", 1, true) or string.find(text, "shop", 1, true)
-					local looks_extractor = string.find(text, "extractor", 1, true) or string.find(text, "extract", 1, true) or string.find(text, "machine", 1, true) or string.find(text, "processor", 1, true)
-					local looks_collect = string.find(text, "collect", 1, true) or string.find(text, "claim", 1, true) or string.find(text, "pickup", 1, true) or string.find(text, "pick up", 1, true) or string.find(text, "grab", 1, true) or string.find(text, "take", 1, true) or string.find(text, "reward", 1, true) or string.find(text, "ball", 1, true) or string.find(text, "drop", 1, true) or string.find(text, "loot", 1, true)
-					if not looks_sell and not looks_upgrade and not looks_extractor and looks_collect then
-						local part = SD.resolve_part(p)
-						if part and (part.Position - hrp.Position).Magnitude <= 45 then
-							local ok = pcall(fireproximityprompt, p)
-							if ok then n = n + 1 end
-						end
-					end
+		if not SD.caps.fireprompt then return 0 end
+		SD.refresh()
+		for _, p in ipairs(SD.cache.prompts) do
+			if F.is_mine(p) and not is_risky_action(p) then
+				local pname = string.lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or ""))
+				local parentName = p.Parent and string.lower(p.Parent.Name or "") or ""
+				local path = ""
+				pcall(function() path = string.lower(p:GetFullName()) end)
+				local text = pname .. " " .. parentName .. " " .. path
+				-- collect is for pickups/drops/rewards/boards/balls only - NEVER sell/upgrade/extractor
+				local looks_sell = string.find(text, "sell", 1, true) or string.find(text, "cashout", 1, true) or string.find(text, "exchange", 1, true)
+				local looks_upgrade = string.find(text, "upgrade", 1, true) or string.find(text, "buy", 1, true) or string.find(text, "shop", 1, true)
+				local looks_extractor = string.find(text, "extractor", 1, true) or string.find(text, "extract", 1, true) or string.find(text, "machine", 1, true) or string.find(text, "processor", 1, true)
+				local looks_collect = string.find(text, "collect", 1, true) or string.find(text, "claim", 1, true) or string.find(text, "pickup", 1, true) or string.find(text, "pick up", 1, true) or string.find(text, "grab", 1, true) or string.find(text, "take", 1, true) or string.find(text, "reward", 1, true) or string.find(text, "ball", 1, true) or string.find(text, "drop", 1, true) or string.find(text, "loot", 1, true) or string.find(text, "board", 1, true)
+				if not looks_sell and not looks_upgrade and not looks_extractor and looks_collect then
+					local ok = pcall(fireproximityprompt, p)
+					if ok then n = n + 1 end
 				end
 			end
 		end
-		-- fallback: only if we found nothing and user is very close to a clearly collectible prompt
 		return n
 	end
 
