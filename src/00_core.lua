@@ -311,13 +311,14 @@ SD.config = {
 }
 
 SD.state = {
-    session_start  = os.time(),
-    session_earned = 0,
-    last_cash      = nil,
-    paused         = false,
-    anchor         = nil,   -- CFrame to return to after a sell trip
-    rejoin_guard   = false,
-}
+		session_start  = os.time(),
+		session_earned = 0,
+		last_cash      = nil,
+		paused         = false,
+		anchor         = nil,   -- CFrame to return to after a sell trip
+		rejoin_guard   = false,
+		queued_tp      = false,
+	}
 
 function SD.save_config()
     if not (SD.caps.writefile and SD.caps.makefolder) then

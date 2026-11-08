@@ -311,13 +311,14 @@ SD.config = {
 }
 
 SD.state = {
-    session_start  = os.time(),
-    session_earned = 0,
-    last_cash      = nil,
-    paused         = false,
-    anchor         = nil,   -- CFrame to return to after a sell trip
-    rejoin_guard   = false,
-}
+		session_start  = os.time(),
+		session_earned = 0,
+		last_cash      = nil,
+		paused         = false,
+		anchor         = nil,   -- CFrame to return to after a sell trip
+		rejoin_guard   = false,
+		queued_tp      = false,
+	}
 
 function SD.save_config()
     if not (SD.caps.writefile and SD.caps.makefolder) then
@@ -1491,9 +1492,11 @@ local F = {}
 SD.features = F
 
 -- defaults that live here rather than in core (feature-local knobs)
-if SD.config.sell_return == nil then SD.config.sell_return = true end
-if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-if SD.config.esp_players == nil then SD.config.esp_players = false end
+	if SD.config.sell_return == nil then SD.config.sell_return = true end
+	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
+	if SD.config.esp_players == nil then SD.config.esp_players = false end
+	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
+	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
 
 -- rate gate ---------------------------------------------------------------
 
@@ -1659,33 +1662,55 @@ end
 
 -- core actions ------------------------------------------------------------
 
-function F.sell_once()
-    local rname = SD.config.sell_remote
-    if rname and rname ~= "" then
-        local list = SD.remotes_matching({ rname })
-        if #list > 0 then
-            local ok, err = SD.probe_remote(list[1], {})
-            if not ok then SD.warn("sell remote failed: " .. tostring(err)) end
-            return ok
-        end
-    end
+function F.fire_sell_remotes()
+		-- Fire remotes that look like sell/cashout. Useful when the game uses a
+		-- RemoteEvent instead of a physical sell zone. Silent and rate-gated by caller.
+		local names = { "sell", "cashout", "cash out", "exchange", "deposit", "turnin", "turn in" }
+		local list = SD.remotes_matching(names)
+		local fired = 0
+		for _, r in ipairs(list) do
+			-- avoid obviously dangerous global actions
+			local n = string.lower(r.name or "")
+			if not (string.find(n, "rebirth", 1, true) or string.find(n, "prestige", 1, true) or string.find(n, "reset", 1, true)) then
+				local ok = SD.probe_remote(r, {})
+				if ok then fired = fired + 1 end
+			end
+		end
+		return fired
+	end
 
-    local target = F.sell_target()
-    if not target then return false end
+	function F.sell_once()
+		local rname = SD.config.sell_remote
+		if rname and rname ~= "" then
+			local list = SD.remotes_matching({ rname })
+			if #list > 0 then
+				local ok, err = SD.probe_remote(list[1], {})
+				if not ok then SD.warn("sell remote failed: " .. tostring(err)) end
+				return ok
+			end
+		end
 
-    local ok, fired = F.visit(target, { radius = 18, settle = 0.25 })
-    if not ok then return false end
+		local target = F.sell_target()
+		if target then
+			local ok, fired = F.visit(target, { radius = 18, settle = 0.25 })
+			if ok then
+				if fired == 0 then
+					-- prompt may need a hold; try the raw prompt API on the object itself
+					SD.interact(target)
+				end
+				if SD.config.sell_return then
+					task.delay(0.4, F.return_home)
+				end
+				return true
+			end
+		end
 
-    if fired == 0 then
-        -- prompt may need a hold; try the raw prompt API on the object itself
-        SD.interact(target)
-    end
-
-    if SD.config.sell_return then
-        task.delay(0.4, F.return_home)
-    end
-    return true
-end
+		-- fallback: some Sell Dirt variants are remote-driven with no physical zone
+		if SD.config.auto_sell_remote_fallback then
+			return F.fire_sell_remotes() > 0
+		end
+		return false
+	end
 
 function F.dig_click()
     local hrp = SD.get_hrp()
@@ -1966,17 +1991,7 @@ function F.fps_boost_restore()
     F._fx_backup = nil
 end
 
--- rejoin / hop ------------------------------------------------------------
-
-function F.rejoin()
-    if SD.state.rejoin_guard then return end
-    SD.state.rejoin_guard = true
-    SD.notify("rejoining...", "warn")
-    task.wait(0.5)
-    pcall(function()
-        SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr)
-    end)
-end
+-- rejoin / hop (F.rejoin and F.server_hop defined below with queue_on_teleport support)
 
 function F.auto_rejoin_enable()
     if F._rejoin_conn then return end
@@ -1999,25 +2014,55 @@ function F.auto_rejoin_enable()
     end)
 end
 
-function F.server_hop()
-    local ok, body = pcall(function()
-        return game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true"):format(game.PlaceId))
-    end)
-    if not ok or not body then
-        SD.notify("hop failed: http blocked", "err")
-        return
-    end
-    local dec_ok, data = pcall(function() return SD.HttpService:JSONDecode(body) end)
-    if not dec_ok or not data or not data.data or #data.data == 0 then
-        SD.notify("no servers found", "warn")
-        return
-    end
-    local pick = data.data[math.random(1, #data.data)]
-    SD.notify("hopping to " .. tostring(pick.id):sub(1, 8), "info")
-    pcall(function()
-        SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, SD.plr)
-    end)
-end
+local function queue_self()
+		if SD.state.queued_tp then return end
+		if not SD.config.queue_on_teleport then return end
+		if not SD.caps.queue_teleport then return end
+		-- Re-execute from the same hosted source if the user loaded via HttpGet,
+		-- or just re-run the global entry if present. We store a small bootstrap.
+		local url = rawget(getgenv(), "SD_LOADSTRING_URL")
+		local payload
+		if type(url) == "string" and url ~= "" then
+			payload = ("loadstring(game:HttpGet(%q))()"):format(url)
+		else
+			-- no known URL; nothing safe to queue
+			return
+		end
+		local ok = pcall(function() queue_on_teleport(payload) end)
+		if ok then SD.state.queued_tp = true end
+	end
+
+	function F.server_hop()
+		queue_self()
+		local ok, body = pcall(function()
+			return game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true"):format(game.PlaceId))
+		end)
+		if not ok or not body then
+			SD.notify("hop failed: http blocked", "err")
+			return
+		end
+		local dec_ok, data = pcall(function() return SD.HttpService:JSONDecode(body) end)
+		if not dec_ok or not data or not data.data or #data.data == 0 then
+			SD.notify("no servers found", "warn")
+			return
+		end
+		local pick = data.data[math.random(1, #data.data)]
+		SD.notify("hopping to " .. tostring(pick.id):sub(1, 8), "info")
+		pcall(function()
+			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, SD.plr)
+		end)
+	end
+
+	function F.rejoin()
+		if SD.state.rejoin_guard then return end
+		SD.state.rejoin_guard = true
+		queue_self()
+		SD.notify("rejoining...", "warn")
+		task.wait(0.5)
+		pcall(function()
+			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr)
+		end)
+	end
 
 -- background tasks --------------------------------------------------------
 
@@ -2704,6 +2749,12 @@ gui.toggle(auto, {
 })
 
 gui.toggle(auto, {
+    text = "Remote sell fallback (if no sell zone found)",
+    default = SD.config.auto_sell_remote_fallback,
+    callback = bind("auto_sell_remote_fallback"),
+})
+
+gui.toggle(auto, {
     text = "Auto dig",
     default = SD.config.auto_dig,
     callback = bind("auto_dig"),
@@ -2739,6 +2790,22 @@ gui.toggle(auto, {
     text = "Auto rebirth / prestige",
     default = SD.config.auto_rebirth,
     callback = bind("auto_rebirth"),
+})
+
+gui.button(auto, {
+    text = "Sell now",
+    callback = function()
+        local ok = SD.features.sell_once()
+        SD.notify(ok and "sell triggered" or "sell target not found (check overrides / Exploit tab)", ok and "ok" or "warn")
+    end,
+})
+
+gui.button(auto, {
+    text = "Fire sell-like remotes now",
+    callback = function()
+        local n = SD.features.fire_sell_remotes()
+        SD.notify(("fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
+    end,
 })
 
 local targets = gui.section(grind, "Target overrides")
@@ -2896,6 +2963,34 @@ gui.toggle(speed, {
     end,
 })
 
+local cheats = gui.section(move, "Client movement helpers")
+
+gui.toggle(cheats, {
+    text = "Noclip (client; may not bypass all anti-cheat)",
+    default = false,
+    callback = function(v)
+        SD.exploits.noclip(v)
+        if v then
+            SD.add_task("noclip", 0.2, function()
+                if not SD.exploits._noclip then return end
+                local ch = SD.get_char()
+                if not ch then return end
+                for _, p in ipairs(ch:GetDescendants()) do
+                    if p:IsA("BasePart") then p.CanCollide = false end
+                end
+            end)
+        end
+    end,
+})
+
+gui.button(cheats, {
+    text = "Enable infinite jump (client)",
+    callback = function()
+        SD.exploits.infinite_jump()
+        SD.notify("infinite jump enabled", "ok")
+    end,
+})
+
 -- VISUALS ------------------------------------------------------------------
 
 local vis = gui.tab("Visual")
@@ -2968,6 +3063,12 @@ gui.toggle(misc, {
     text = "Auto rejoin on disconnect",
     default = SD.config.auto_rejoin,
     callback = bind("auto_rejoin"),
+})
+
+gui.toggle(misc, {
+    text = "Queue script on teleport/hop (needs hosted loadstring URL)",
+    default = SD.config.queue_on_teleport,
+    callback = bind("queue_on_teleport"),
 })
 
 gui.toggle(misc, {

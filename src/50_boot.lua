@@ -64,6 +64,12 @@ gui.toggle(auto, {
 })
 
 gui.toggle(auto, {
+    text = "Remote sell fallback (if no sell zone found)",
+    default = SD.config.auto_sell_remote_fallback,
+    callback = bind("auto_sell_remote_fallback"),
+})
+
+gui.toggle(auto, {
     text = "Auto dig",
     default = SD.config.auto_dig,
     callback = bind("auto_dig"),
@@ -99,6 +105,22 @@ gui.toggle(auto, {
     text = "Auto rebirth / prestige",
     default = SD.config.auto_rebirth,
     callback = bind("auto_rebirth"),
+})
+
+gui.button(auto, {
+    text = "Sell now",
+    callback = function()
+        local ok = SD.features.sell_once()
+        SD.notify(ok and "sell triggered" or "sell target not found (check overrides / Exploit tab)", ok and "ok" or "warn")
+    end,
+})
+
+gui.button(auto, {
+    text = "Fire sell-like remotes now",
+    callback = function()
+        local n = SD.features.fire_sell_remotes()
+        SD.notify(("fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
+    end,
 })
 
 local targets = gui.section(grind, "Target overrides")
@@ -256,6 +278,34 @@ gui.toggle(speed, {
     end,
 })
 
+local cheats = gui.section(move, "Client movement helpers")
+
+gui.toggle(cheats, {
+    text = "Noclip (client; may not bypass all anti-cheat)",
+    default = false,
+    callback = function(v)
+        SD.exploits.noclip(v)
+        if v then
+            SD.add_task("noclip", 0.2, function()
+                if not SD.exploits._noclip then return end
+                local ch = SD.get_char()
+                if not ch then return end
+                for _, p in ipairs(ch:GetDescendants()) do
+                    if p:IsA("BasePart") then p.CanCollide = false end
+                end
+            end)
+        end
+    end,
+})
+
+gui.button(cheats, {
+    text = "Enable infinite jump (client)",
+    callback = function()
+        SD.exploits.infinite_jump()
+        SD.notify("infinite jump enabled", "ok")
+    end,
+})
+
 -- VISUALS ------------------------------------------------------------------
 
 local vis = gui.tab("Visual")
@@ -328,6 +378,12 @@ gui.toggle(misc, {
     text = "Auto rejoin on disconnect",
     default = SD.config.auto_rejoin,
     callback = bind("auto_rejoin"),
+})
+
+gui.toggle(misc, {
+    text = "Queue script on teleport/hop (needs hosted loadstring URL)",
+    default = SD.config.queue_on_teleport,
+    callback = bind("queue_on_teleport"),
 })
 
 gui.toggle(misc, {

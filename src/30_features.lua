@@ -10,9 +10,11 @@ local F = {}
 SD.features = F
 
 -- defaults that live here rather than in core (feature-local knobs)
-if SD.config.sell_return == nil then SD.config.sell_return = true end
-if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-if SD.config.esp_players == nil then SD.config.esp_players = false end
+	if SD.config.sell_return == nil then SD.config.sell_return = true end
+	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
+	if SD.config.esp_players == nil then SD.config.esp_players = false end
+	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
+	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
 
 -- rate gate ---------------------------------------------------------------
 
@@ -178,33 +180,55 @@ end
 
 -- core actions ------------------------------------------------------------
 
-function F.sell_once()
-    local rname = SD.config.sell_remote
-    if rname and rname ~= "" then
-        local list = SD.remotes_matching({ rname })
-        if #list > 0 then
-            local ok, err = SD.probe_remote(list[1], {})
-            if not ok then SD.warn("sell remote failed: " .. tostring(err)) end
-            return ok
-        end
-    end
+function F.fire_sell_remotes()
+		-- Fire remotes that look like sell/cashout. Useful when the game uses a
+		-- RemoteEvent instead of a physical sell zone. Silent and rate-gated by caller.
+		local names = { "sell", "cashout", "cash out", "exchange", "deposit", "turnin", "turn in" }
+		local list = SD.remotes_matching(names)
+		local fired = 0
+		for _, r in ipairs(list) do
+			-- avoid obviously dangerous global actions
+			local n = string.lower(r.name or "")
+			if not (string.find(n, "rebirth", 1, true) or string.find(n, "prestige", 1, true) or string.find(n, "reset", 1, true)) then
+				local ok = SD.probe_remote(r, {})
+				if ok then fired = fired + 1 end
+			end
+		end
+		return fired
+	end
 
-    local target = F.sell_target()
-    if not target then return false end
+	function F.sell_once()
+		local rname = SD.config.sell_remote
+		if rname and rname ~= "" then
+			local list = SD.remotes_matching({ rname })
+			if #list > 0 then
+				local ok, err = SD.probe_remote(list[1], {})
+				if not ok then SD.warn("sell remote failed: " .. tostring(err)) end
+				return ok
+			end
+		end
 
-    local ok, fired = F.visit(target, { radius = 18, settle = 0.25 })
-    if not ok then return false end
+		local target = F.sell_target()
+		if target then
+			local ok, fired = F.visit(target, { radius = 18, settle = 0.25 })
+			if ok then
+				if fired == 0 then
+					-- prompt may need a hold; try the raw prompt API on the object itself
+					SD.interact(target)
+				end
+				if SD.config.sell_return then
+					task.delay(0.4, F.return_home)
+				end
+				return true
+			end
+		end
 
-    if fired == 0 then
-        -- prompt may need a hold; try the raw prompt API on the object itself
-        SD.interact(target)
-    end
-
-    if SD.config.sell_return then
-        task.delay(0.4, F.return_home)
-    end
-    return true
-end
+		-- fallback: some Sell Dirt variants are remote-driven with no physical zone
+		if SD.config.auto_sell_remote_fallback then
+			return F.fire_sell_remotes() > 0
+		end
+		return false
+	end
 
 function F.dig_click()
     local hrp = SD.get_hrp()
@@ -485,17 +509,7 @@ function F.fps_boost_restore()
     F._fx_backup = nil
 end
 
--- rejoin / hop ------------------------------------------------------------
-
-function F.rejoin()
-    if SD.state.rejoin_guard then return end
-    SD.state.rejoin_guard = true
-    SD.notify("rejoining...", "warn")
-    task.wait(0.5)
-    pcall(function()
-        SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr)
-    end)
-end
+-- rejoin / hop (F.rejoin and F.server_hop defined below with queue_on_teleport support)
 
 function F.auto_rejoin_enable()
     if F._rejoin_conn then return end
@@ -518,25 +532,55 @@ function F.auto_rejoin_enable()
     end)
 end
 
-function F.server_hop()
-    local ok, body = pcall(function()
-        return game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true"):format(game.PlaceId))
-    end)
-    if not ok or not body then
-        SD.notify("hop failed: http blocked", "err")
-        return
-    end
-    local dec_ok, data = pcall(function() return SD.HttpService:JSONDecode(body) end)
-    if not dec_ok or not data or not data.data or #data.data == 0 then
-        SD.notify("no servers found", "warn")
-        return
-    end
-    local pick = data.data[math.random(1, #data.data)]
-    SD.notify("hopping to " .. tostring(pick.id):sub(1, 8), "info")
-    pcall(function()
-        SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, SD.plr)
-    end)
-end
+local function queue_self()
+		if SD.state.queued_tp then return end
+		if not SD.config.queue_on_teleport then return end
+		if not SD.caps.queue_teleport then return end
+		-- Re-execute from the same hosted source if the user loaded via HttpGet,
+		-- or just re-run the global entry if present. We store a small bootstrap.
+		local url = rawget(getgenv(), "SD_LOADSTRING_URL")
+		local payload
+		if type(url) == "string" and url ~= "" then
+			payload = ("loadstring(game:HttpGet(%q))()"):format(url)
+		else
+			-- no known URL; nothing safe to queue
+			return
+		end
+		local ok = pcall(function() queue_on_teleport(payload) end)
+		if ok then SD.state.queued_tp = true end
+	end
+
+	function F.server_hop()
+		queue_self()
+		local ok, body = pcall(function()
+			return game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true"):format(game.PlaceId))
+		end)
+		if not ok or not body then
+			SD.notify("hop failed: http blocked", "err")
+			return
+		end
+		local dec_ok, data = pcall(function() return SD.HttpService:JSONDecode(body) end)
+		if not dec_ok or not data or not data.data or #data.data == 0 then
+			SD.notify("no servers found", "warn")
+			return
+		end
+		local pick = data.data[math.random(1, #data.data)]
+		SD.notify("hopping to " .. tostring(pick.id):sub(1, 8), "info")
+		pcall(function()
+			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, SD.plr)
+		end)
+	end
+
+	function F.rejoin()
+		if SD.state.rejoin_guard then return end
+		SD.state.rejoin_guard = true
+		queue_self()
+		SD.notify("rejoining...", "warn")
+		task.wait(0.5)
+		pcall(function()
+			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr)
+		end)
+	end
 
 -- background tasks --------------------------------------------------------
 
