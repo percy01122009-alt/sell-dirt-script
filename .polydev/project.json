@@ -1,0 +1,9 @@
+{
+  "name": "Sell-Dirt-Script",
+  "templateId": "empty",
+  "agent": {
+    "profile": "light",
+    "planApproval": true,
+    "askUser": true
+  }
+}
