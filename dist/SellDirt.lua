@@ -1,22 +1,17 @@
 --[[
-    Sell Dirt — automation suite
-    language: Luau | target: Roblox client, Delta Executor (Android)
-    file: 00_core.lua
-
-    Services, executor capability probe, config/state, shared helpers.
-    Everything else hangs off the global SD table.
+    Sell Dirt — v3 core
+    Luau client script (Delta Executor Android). Shared services, config, scheduler, helpers.
 ]]
 
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "2.3.0"
+SD.version = "3.0.0"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)
-    local ok, s = pcall(game.GetService, game, name)
-    if ok then return s end
-    return nil
+	local ok, s = pcall(game.GetService, game, name)
+	return ok and s or nil
 end
 
 SD.Players           = svc("Players")
@@ -28,333 +23,158 @@ SD.TeleportService   = svc("TeleportService")
 SD.HttpService       = svc("HttpService")
 SD.Lighting          = svc("Lighting")
 SD.StarterGui        = svc("StarterGui")
-SD.CollectionService = svc("CollectionService")
 SD.VirtualUser       = svc("VirtualUser")
 SD.Workspace         = workspace
-
-SD.plr = SD.Players and SD.Players.LocalPlayer or nil
-SD.t0  = os.clock()
-
--- executor surface ----------------------------------------------------------
+SD.plr               = SD.Players and SD.Players.LocalPlayer or nil
+SD.t0                = os.clock()
 
 SD.caps = {
-    writefile      = type(writefile) == "function",
-    readfile       = type(readfile) == "function",
-    isfile         = type(isfile) == "function",
-    makefolder     = type(makefolder) == "function",
-    fireprompt     = type(fireproximityprompt) == "function",
-    fireclick      = type(fireclickdetector) == "function",
-    getconnections = type(getconnections) == "function",
-    hookfunction   = type(hookfunction) == "function",
-    getrawmeta     = type(getrawmetatable) == "function",
-    sethidden      = type(sethiddenproperty) == "function",
-    queue_teleport = type(queue_on_teleport) == "function",
-    httpget        = type(game.HttpGet) == "function",
+	writefile      = type(writefile) == "function",
+	readfile       = type(readfile) == "function",
+	isfile         = type(isfile) == "function",
+	makefolder     = type(makefolder) == "function",
+	fireprompt     = type(fireproximityprompt) == "function",
+	fireclick      = type(fireclickdetector) == "function",
+	queue_teleport = type(queue_on_teleport) == "function",
 }
-
--- logging -------------------------------------------------------------------
 
 local PREFIX = "[SD] "
-
-function SD.log(...)
-    local parts = {}
-    for i = 1, select("#", ...) do
-        parts[#parts + 1] = tostring((select(i, ...)))
-    end
-    print(PREFIX .. table.concat(parts, " "))
-end
-
-function SD.warn(...)
-    local parts = {}
-    for i = 1, select("#", ...) do
-        parts[#parts + 1] = tostring((select(i, ...)))
-    end
-    warn(PREFIX .. table.concat(parts, " "))
-end
-
--- notifications: queued until the GUI exists, then flushed -------------------
+function SD.log(...) local p={}; for i=1,select("#",...) do p[#p+1]=tostring(select(i,...)) end; print(PREFIX..table.concat(p," ")) end
+function SD.warn(...) local p={}; for i=1,select("#",...) do p[#p+1]=tostring(select(i,...)) end; warn(PREFIX..table.concat(p," ")) end
 
 SD._notify_queue = {}
-
 function SD.notify(text, kind)
-    local gui = SD.gui
-    if gui and gui.ready then
-        gui.notify(text, kind)
-    else
-        table.insert(SD._notify_queue, {text = text, kind = kind})
-    end
+	local gui = SD.gui
+	if gui and gui.ready then gui.notify(text, kind) else table.insert(SD._notify_queue, { text=text, kind=kind }) end
 end
 
--- small utilities -----------------------------------------------------------
-
-function SD.safe(fn, ...)
-    local ok, res = pcall(fn, ...)
-    if ok then return res end
-    return nil, res
-end
-
-function SD.round(n, dp)
-    local m = 10 ^ (dp or 0)
-    return math.floor(n * m + 0.5) / m
-end
-
+function SD.safe(fn, ...) local ok, res = pcall(fn, ...); if ok then return res end; return nil, res end
 function SD.fmt(n)
-    n = tonumber(n) or 0
-    local a = math.abs(n)
-    if a >= 1e12 then return string.format("%.2ft", n / 1e12) end
-    if a >= 1e9  then return string.format("%.2fb", n / 1e9)  end
-    if a >= 1e6  then return string.format("%.2fm", n / 1e6)  end
-    if a >= 1e4  then return string.format("%.1fk", n / 1e3)  end
-    return tostring(math.floor(n))
+	n = tonumber(n) or 0; local a = math.abs(n)
+	if a >= 1e12 then return string.format("%.2fT", n/1e12) end
+	if a >= 1e9  then return string.format("%.2fB", n/1e9) end
+	if a >= 1e6  then return string.format("%.2fM", n/1e6) end
+	if a >= 1e4  then return string.format("%.1fK", n/1e3) end
+	return tostring(math.floor(n + 0.5))
 end
-
 function SD.clock_str(sec)
-    sec = math.max(0, math.floor(sec or 0))
-    local h = math.floor(sec / 3600)
-    local m = math.floor((sec % 3600) / 60)
-    local s = sec % 60
-    if h > 0 then return string.format("%dh %02dm", h, m) end
-    if m > 0 then return string.format("%dm %02ds", m, s) end
-    return string.format("%ds", s)
+	sec = math.max(0, math.floor(sec or 0))
+	local h = math.floor(sec/3600); local m = math.floor((sec%3600)/60); local s = sec%60
+	if h > 0 then return string.format("%dh %02dm", h, m) end
+	if m > 0 then return string.format("%dm %02ds", m, s) end
+	return string.format("%ds", s)
 end
 
-function SD.wait_for(pred, timeout)
-    local deadline = os.clock() + (timeout or 5)
-    while os.clock() < deadline do
-        local v = pred()
-        if v then return v end
-        task.wait(0.1)
-    end
-    return nil
-end
-
--- character access ----------------------------------------------------------
-
-function SD.get_char()
-    local plr = SD.plr
-    if not plr then return nil end
-    return plr.Character
-end
-
-function SD.get_hrp()
-    local ch = SD.get_char()
-    if not ch then return nil end
-    return ch:FindFirstChild("HumanoidRootPart")
-end
-
-function SD.get_hum()
-    local ch = SD.get_char()
-    if not ch then return nil end
-    return ch:FindFirstChildOfClass("Humanoid")
-end
-
-function SD.alive()
-    local hum = SD.get_hum()
-    return hum ~= nil and hum.Health > 0
-end
-
--- movement ------------------------------------------------------------------
-
-function SD.set_walkspeed(v)
-    local hum = SD.get_hum()
-    if hum then hum.WalkSpeed = v end
-end
-
-function SD.set_jumppower(v)
-    local hum = SD.get_hum()
-    if hum then
-        hum.UseJumpPower = true
-        hum.JumpPower = v
-    end
-end
+function SD.get_char() return LP and LP.Character or (SD.plr and SD.plr.Character) end
+local LP = SD.plr
+function SD.get_char() return SD.plr and SD.plr.Character end
+function SD.get_hrp() local ch=SD.get_char(); return ch and ch:FindFirstChild("HumanoidRootPart") end
+function SD.get_hum() local ch=SD.get_char(); return ch and ch:FindFirstChildOfClass("Humanoid") end
+function SD.alive() local h=SD.get_hum(); return h and h.Health > 0 end
 
 function SD.tp(target)
-    local hrp = SD.get_hrp()
-    if not hrp then return false end
-
-    local cf
-    if typeof(target) == "CFrame" then
-        cf = target
-    elseif typeof(target) == "Vector3" then
-        cf = CFrame.new(target)
-    elseif typeof(target) == "Instance" then
-        if target:IsA("BasePart") then
-            cf = target.CFrame
-        elseif target:IsA("Model") and target.PrimaryPart then
-            cf = target.PrimaryPart.CFrame
-        else
-            local p = target:FindFirstChildWhichIsA("BasePart", true)
-            if not p then return false end
-            cf = p.CFrame
-        end
-    else
-        return false
-    end
-
-    local ok = pcall(function() hrp.CFrame = cf end)
-    if not ok then
-        local ch = SD.get_char()
-        if ch then pcall(function() ch:PivotTo(cf) end) end
-    end
-    pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
-    return true
+	local hrp = SD.get_hrp(); if not hrp then return false end
+	local cf
+	if typeof(target) == "CFrame" then cf = target
+	elseif typeof(target) == "Vector3" then cf = CFrame.new(target)
+	elseif typeof(target) == "Instance" then
+		if target:IsA("BasePart") then cf = target.CFrame
+		elseif target:IsA("Model") and target.PrimaryPart then cf = target.PrimaryPart.CFrame
+		else local p = target:FindFirstChildWhichIsA("BasePart", true); if not p then return false end; cf = p.CFrame end
+	else return false end
+	local ok = pcall(function() hrp.CFrame = cf end)
+	if not ok then local ch=SD.get_char(); if ch then pcall(function() ch:PivotTo(cf) end) end end
+	pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+	return true
 end
-
--- stats ---------------------------------------------------------------------
 
 local STAT_CONTAINERS = { "leaderstats", "Stats", "Data", "Values", "PlayerStats", "save" }
-
 function SD.leaderstats()
-    local out = {}
-    local plr = SD.plr
-    if not plr then return out end
-    for _, cname in ipairs(STAT_CONTAINERS) do
-        local c = plr:FindFirstChild(cname)
-        if c then
-            for _, v in ipairs(c:GetChildren()) do
-                if v:IsA("ValueBase") then
-                    out[v.Name] = v.Value
-                end
-            end
-        end
-    end
-    return out
+	local out = {}; local plr = SD.plr; if not plr then return out end
+	for _, cname in ipairs(STAT_CONTAINERS) do
+		local c = plr:FindFirstChild(cname)
+		if c then for _, v in ipairs(c:GetChildren()) do if v:IsA("ValueBase") then out[v.Name] = v.Value end end end
+	end
+	return out
 end
-
-function SD.all_values()
-    local out = {}
-    local plr = SD.plr
-    if not plr then return out end
-    for _, v in ipairs(plr:GetDescendants()) do
-        if v:IsA("ValueBase") then
-            out[v:GetFullName()] = v.Value
-        end
-    end
-    return out
-end
-
 function SD.cash()
-    local ls = SD.leaderstats()
-    local best, bestv = nil, -math.huge
-    for name, v in pairs(ls) do
-        if type(v) == "number" and v > bestv then
-            local ln = string.lower(name)
-            if string.find(ln, "cash", 1, true)
-                or string.find(ln, "money", 1, true)
-                or string.find(ln, "coin", 1, true)
-                or string.find(ln, "dollar", 1, true) then
-                best, bestv = name, v
-            end
-        end
-    end
-    if best then return bestv, best end
-    return nil, nil
+	local best, bestv = nil, -math.huge
+	for name, v in pairs(SD.leaderstats()) do
+		if type(v) == "number" and v > bestv then
+			local ln = string.lower(name)
+			if has and has(ln, "cash") then best,bestv=name,v
+			elseif string.find(ln,"cash",1,true) or string.find(ln,"money",1,true) or string.find(ln,"coin",1,true) or string.find(ln,"dirt",1,true) or string.find(ln,"dollar",1,true) then
+				best,bestv=name,v end
+		end
+	end
+	if best then return bestv, best end
+	return nil, nil
 end
-
--- task scheduler ------------------------------------------------------------
 
 SD.tasks = {}
-
-function SD.add_task(name, interval, fn)
-    SD.tasks[name] = { interval = interval, fn = fn, last = 0 }
-end
-
+function SD.add_task(name, interval, fn) SD.tasks[name] = { interval=interval, fn=fn, last=0 } end
 function SD.run_tasks()
-    local now = os.clock()
-    for name, t in pairs(SD.tasks) do
-        if now - t.last >= t.interval then
-            t.last = now
-            local ok, err = pcall(t.fn)
-            if not ok then
-                SD.warn("task '" .. name .. "' failed: " .. tostring(err))
-            end
-        end
-    end
+	local t = os.clock()
+	for name, task in pairs(SD.tasks) do
+		if t - task.last >= task.interval then
+			task.last = t
+			local ok, err = pcall(task.fn)
+			if not ok then SD.warn("task " .. name .. ": " .. tostring(err)) end
+		end
+	end
 end
-
--- config --------------------------------------------------------------------
 
 SD.CONFIG_FILE = "SellDirt/config.json"
-
 SD.config = {
-    -- selling / grinding
-    auto_sell        = false,
-    auto_sell_delay  = 1.5,
-    auto_dig         = false,
-    auto_dig_delay   = 0.35,
-    auto_collect     = false,
-    auto_upgrade     = false,
-    auto_rebirth     = false,
-
-    -- movement
-    tp_crown         = false,
-    tp_crown_delay   = 2.0,
-    walkspeed        = 16,
-    walkspeed_lock   = false,
-    jumppower        = 50,
-    jumppower_lock   = false,
-
-    -- utility (all off by default)
-	    anti_afk         = false,
-	    auto_rejoin      = false,
-	    fullbright       = false,
-	    fps_boost        = false,
-	    esp_crown        = false,
-	    esp_sell         = false,
-	    esp_dirt         = false,
-
-    -- user overrides (filled by the GUI, used by the heuristics)
-    crown_name       = "",
-    sell_name        = "",
-    dig_tool_name    = "",
-    sell_remote      = "",
+	-- modules (all OFF by default)
+	auto_sell=false, auto_collect=false, auto_dig=false, auto_crown=false,
+	auto_upgrade=false, auto_rebirth=false,
+	anti_afk=false, auto_rejoin=false,
+	speed_lock=false, jump_lock=false, noclip=false,
+	esp_crown=false, esp_players=false, fullbright=false, fps_boost=false,
+	-- tuning
+	walkspeed=24, jumppower=50,
+	sell_delay=1.2, dig_delay=0.25, collect_delay=1.0, crown_delay=0.75,
+	only_my_plot=true,
+	-- overrides
+	sell_remote="", sell_object="", crown_object="", dig_tool="",
 }
+SD.state = { session_start=os.time(), session_earned=0, last_cash=nil, paused=false, rejoin_guard=false }
 
-SD.state = {
-		session_start  = os.time(),
-		session_earned = 0,
-		last_cash      = nil,
-		paused         = false,
-		anchor         = nil,   -- CFrame to return to after a sell trip
-		rejoin_guard   = false,
-		queued_tp      = false,
-	}
+local FORCE_OFF = { "auto_sell","auto_collect","auto_dig","auto_crown","auto_upgrade","auto_rebirth","anti_afk","auto_rejoin","speed_lock","jump_lock","noclip","esp_crown","esp_players","fullbright","fps_boost","tp_crown","walkspeed_lock","jumppower_lock","auto_sell_teleport","queue_on_teleport" }
 
 function SD.save_config()
-    if not (SD.caps.writefile and SD.caps.makefolder) then
-        SD.notify("executor cannot write files", "warn")
-        return false
-    end
-    pcall(function() makefolder("SellDirt") end)
-    local ok, json = pcall(function() return SD.HttpService:JSONEncode(SD.config) end)
-    if not ok then return false end
-    local wrote = pcall(function() writefile(SD.CONFIG_FILE, json) end)
-    if wrote then SD.notify("config saved", "ok") end
-    return wrote
+	if not (SD.caps.writefile and SD.caps.makefolder) then SD.notify("config save unavailable in this executor", "warn"); return false end
+	pcall(function() makefolder("SellDirt") end)
+	local ok, json = pcall(function() return SD.HttpService:JSONEncode(SD.config) end)
+	if not ok then return false end
+	local w = pcall(function() writefile(SD.CONFIG_FILE, json) end)
+	if w then SD.notify("Config saved", "ok") end
+	return w
 end
 
 function SD.load_config()
-	    if not (SD.caps.readfile and SD.caps.isfile) then return false end
-	    if not isfile(SD.CONFIG_FILE) then return false end
-	    local ok, raw = pcall(readfile, SD.CONFIG_FILE)
-	    if not ok or not raw then return false end
-	    local decoded_ok, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
-	    if not decoded_ok or type(data) ~= "table" then return false end
-	    for k, v in pairs(data) do
-	        if SD.config[k] ~= nil then SD.config[k] = v end
-	    end
-	    -- Always start with features OFF (user requested: nothing enabled by default)
-	    local force_off = {
-	        "auto_sell","auto_dig","auto_collect","auto_upgrade","auto_rebirth",
-	        "tp_crown","walkspeed_lock","jumppower_lock","fullbright","fps_boost",
-	        "esp_crown","esp_sell","esp_dirt","anti_afk","auto_rejoin",
-	        "auto_sell_teleport","queue_on_teleport",
-	    }
-	    for _, k in ipairs(force_off) do SD.config[k] = false end
-	    return true
-	end
+	if not (SD.caps.readfile and SD.caps.isfile and isfile(SD.CONFIG_FILE)) then return false end
+	local ok, raw = pcall(readfile, SD.CONFIG_FILE)
+	if not ok or not raw then return false end
+	local ok2, data = pcall(function() return SD.HttpService:JSONDecode(raw) end)
+	if not ok2 or type(data) ~= "table" then return false end
+	for k, v in pairs(data) do if SD.config[k] ~= nil then SD.config[k] = v end end
+	-- map old keys to new where helpful
+	if data.tp_crown ~= nil then SD.config.auto_crown = data.tp_crown end
+	if data.auto_sell_delay ~= nil then SD.config.sell_delay = data.auto_sell_delay end
+	if data.auto_dig_delay ~= nil then SD.config.dig_delay = data.auto_dig_delay end
+	if data.tp_crown_delay ~= nil then SD.config.crown_delay = data.tp_crown_delay end
+	if data.walkspeed_lock ~= nil then SD.config.speed_lock = data.walkspeed_lock end
+	if data.jumppower_lock ~= nil then SD.config.jump_lock = data.jumppower_lock end
+	if data.sell_name ~= nil and SD.config.sell_object == "" then SD.config.sell_object = data.sell_name end
+	if data.crown_name ~= nil and SD.config.crown_object == "" then SD.config.crown_object = data.crown_name end
+	if data.dig_tool_name ~= nil and SD.config.dig_tool == "" then SD.config.dig_tool = data.dig_tool_name end
+	for _, k in ipairs(FORCE_OFF) do SD.config[k] = false end -- always start with modules OFF
+	return true
+end
 
-SD.log("core loaded v" .. SD.version)
+SD.log("core v" .. SD.version .. " loaded")
 
 --[[
     file: 10_recon.lua
@@ -1517,2002 +1337,772 @@ end
 SD.log("gui loaded")
 
 --[[
-    file: 30_features.lua
-    The grind loop. Every target is resolved by name heuristic against the live
-    cache, with a manual override in config for when recon gives us the real
-    names. Nothing here assumes a specific remote exists.
+    Sell Dirt automation features (v3 rework)
+    Goals: no robux/gamepass actions, no cross-plot actions, no false crown TPs,
+    simple on/off modules, and distance-independent sell/collect where possible.
 ]]
 
 local SD = getgenv().SD
 local F = {}
 SD.features = F
 
--- defaults (safe "cheat" behavior: no robux purchases, minimal teleporting)
-	if SD.config.sell_return == nil then SD.config.sell_return = false end
-	if SD.config.dig_mode == nil then SD.config.dig_mode = "both" end
-	if SD.config.esp_players == nil then SD.config.esp_players = false end
-	if SD.config.auto_sell_remote_fallback == nil then SD.config.auto_sell_remote_fallback = true end
-	if SD.config.auto_sell_teleport == nil then SD.config.auto_sell_teleport = false end
-	if SD.config.queue_on_teleport == nil then SD.config.queue_on_teleport = false end
-	if SD.config.only_my_plot == nil then SD.config.only_my_plot = true end
-	if SD.config.tp_crown_only_active == nil then SD.config.tp_crown_only_active = true end
-	if SD.config.auto_upgrade == nil then SD.config.auto_upgrade = false end -- off: can spend in-game currency unexpectedly
-	if SD.config.auto_rebirth == nil then SD.config.auto_rebirth = false end -- off: destructive
-	if SD.config.safe_mode == nil then SD.config.safe_mode = true end
+-- defaults (safe by default; modules off)
+local function dflt(k, v) if SD.config[k] == nil then SD.config[k] = v end end
+dflt("auto_sell", false)
+dflt("auto_collect", false)
+dflt("auto_dig", false)
+dflt("auto_crown", false)
+dflt("auto_upgrade", false)
+dflt("auto_rebirth", false)
+dflt("anti_afk", false)
+dflt("auto_rejoin", false)
+dflt("speed_lock", false)
+dflt("jump_lock", false)
+dflt("noclip", false)
+dflt("esp_crown", false)
+dflt("esp_players", false)
+dflt("fullbright", false)
+dflt("fps_boost", false)
+dflt("walkspeed", 24)
+dflt("jumppower", 50)
+dflt("sell_delay", 1.2)
+dflt("dig_delay", 0.25)
+dflt("collect_delay", 1.0)
+dflt("crown_delay", 0.75)
+dflt("only_my_plot", true)
+dflt("sell_remote", "")
+dflt("sell_object", "")
+dflt("crown_object", "")
+dflt("dig_tool", "")
 
--- plot ownership (fix: never interact with another player's plot) ---------
+F.status = { sell = "off", collect = "off", dig = "off", crown = "off", plot = "?" }
+F._plot, F._plotAt = nil, 0
+F._crown, F._crownAt = nil, 0
+F.esp = { crown = {}, players = {} }
 
-	F._my_plot = nil
-	F._my_plot_at = 0
+local P = SD.Players
+local LP = SD.plr
 
-	local function owner_matches_player(obj)
-		if not obj or not obj.Parent then return false end
-		local plr = SD.plr
-		if not plr then return false end
-		local name = plr.Name
-		local uid = plr.UserId
-
-		-- common attribute patterns
-		local okAttr, attrs = pcall(function() return obj:GetAttributes() end)
-		if okAttr and type(attrs) == "table" then
-			for k, v in pairs(attrs) do
-				local lk = string.lower(tostring(k))
-				if string.find(lk, "owner", 1, true) or string.find(lk, "user", 1, true) then
-					if v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then
-						return true
-					end
-					if typeof and typeof(v) == "Instance" and v == plr then return true end
-				end
-			end
-		end
-
-		-- ObjectValue/StringValue/IntValue owner markers
-		for _, key in ipairs({ "Owner", "owner", "Player", "player", "OwnerId", "UserId", "PlotOwner" }) do
-			local child = obj:FindFirstChild(key)
-			if child then
-				local ok, val = pcall(function() return child.Value end)
-				if ok then
-					if val == plr or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid) then
-						return true
-					end
-				end
-			end
-		end
-
-		return false
-	end
-
-	local function path_has_my_name(inst)
-		if not inst or not SD.plr then return false end
-		local ok, path = pcall(function() return inst:GetFullName() end)
-		if not ok or not path then return false end
-		return string.find(path, SD.plr.Name, 1, true) ~= nil
-	end
-
-	function F.my_plot()
-		if F._my_plot and F._my_plot.Parent and (os.clock() - F._my_plot_at) < 8 then
-			return F._my_plot
-		end
-		F._my_plot = nil
-
-		local roots = {}
-		for _, name in ipairs({ "Plots", "plots", "Tycoons", "tycoons", "Bases", "bases", "Islands", "islands", "Farms", "farms", "PlayerPlots" }) do
-			local r = workspace:FindFirstChild(name)
-			if r then roots[#roots + 1] = r end
-		end
-		if #roots == 0 then
-			-- scan top-level for plot-like containers
-			for _, c in ipairs(workspace:GetChildren()) do
-				local ln = string.lower(c.Name)
-				if string.find(ln, "plot", 1, true) or string.find(ln, "tycoon", 1, true) or string.find(ln, "base", 1, true) then
-					roots[#roots + 1] = c
-				end
-			end
-		end
-
-		for _, root in ipairs(roots) do
-			-- direct child named after player
-			local byName = root:FindFirstChild(SD.plr.Name)
-			if byName then F._my_plot = byName break end
-
-			for _, plot in ipairs(root:GetChildren()) do
-				if owner_matches_player(plot) or path_has_my_name(plot) then
-					F._my_plot = plot
-					break
-				end
-			end
-			if F._my_plot then break end
-		end
-
-		-- fallback: nearest plot-like model to spawn/character that has sell-like stuff? risky.
-		if F._my_plot then F._my_plot_at = os.clock() end
-		return F._my_plot
-	end
-
-	function F.is_mine(inst)
-		if not SD.config.only_my_plot then return true end
-		local plot = F.my_plot()
-		if not plot then return true end -- can't determine ownership: don't block everything
-		local obj = inst
-		if typeof(inst) == "Instance" then
-			if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then
-				obj = inst.Parent
-			end
-		end
-		if not obj then return true end
-		local ok, isDesc = pcall(function() return obj:IsDescendantOf(plot) end)
-		if ok and isDesc then return true end
-		-- allow if it's literally the plot or has our name
-		if path_has_my_name(obj) then return true end
-		-- check owner markers on ancestors up a bit
-		local cur = obj
-		for _ = 1, 6 do
-			if not cur or cur == workspace then break end
-			if owner_matches_player(cur) then return true end
-			cur = cur.Parent
-		end
-		return false
-	end
-
-	local function filter_mine(list)
-		if not SD.config.only_my_plot then return list end
-		local plot = F.my_plot()
-		if not plot then return list end
-		local out = {}
-		for _, v in ipairs(list) do
-			if F.is_mine(v) then out[#out + 1] = v end
-		end
-		-- if filtering removed everything, fall back to unfiltered to avoid breaking games without plot metadata
-		if #out == 0 then return list end
-		return out
-	end
-
-	-- rate gate ---------------------------------------------------------------
-
-local gates = {}
-function SD.gate(key, delay)
-    local now = os.clock()
-    if (gates[key] or 0) > now then return false end
-    gates[key] = now + delay
-    return true
+local function now() return os.clock() end
+local function lower(s) return string.lower(tostring(s or "")) end
+local function has(s, pat) return string.find(lower(s), lower(pat), 1, true) ~= nil end
+local function hasAny(s, pats)
+	s = lower(s)
+	for _, p in ipairs(pats) do if string.find(s, lower(p), 1, true) then return true end end
+	return false
 end
 
--- safety: never trigger robux/gamepass/devproduct/purchase/autosell-pass flows
-	local function is_risky_action(inst)
-		local texts = {}
-		local function add(v)
-			if type(v) == "string" and v ~= "" then texts[#texts + 1] = string.lower(v) end
+-- safety --------------------------------------------------------------------
+local RISKY = { "robux", "gamepass", "game pass", "devproduct", "developer product", "donate", "donation", "premium", "vip pass", "autosell", "auto sell", "auto-sell", "promptpurchase", "marketplace" }
+function F.is_risky(inst)
+	if not inst then return false end
+	local bits = {}
+	local function add(v) if type(v) == "string" and v ~= "" then bits[#bits+1] = lower(v) end end
+	if typeof(inst) == "Instance" then
+		add(inst.Name)
+		pcall(function() add(inst:GetFullName()) end)
+		if inst:IsA("ProximityPrompt") then
+			pcall(function() add(inst.ActionText) end)
+			pcall(function() add(inst.ObjectText) end)
 		end
-		if typeof(inst) == "Instance" then
-			add(inst.Name)
-			local ok, path = pcall(function() return inst:GetFullName() end)
-			if ok then add(path) end
-			if inst:IsA("ProximityPrompt") then
-				pcall(function() add(inst.ActionText) end)
-				pcall(function() add(inst.ObjectText) end)
-			end
-			local parent = inst.Parent
-			if parent then
-				add(parent.Name)
-				for _, d in ipairs(parent:GetDescendants()) do
-					if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
-						pcall(function() add(d.Text) end)
-					end
-					if #texts > 24 then break end
+		local par = inst.Parent
+		if par then
+			add(par.Name)
+			for _, d in ipairs(par:GetDescendants()) do
+				if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+					pcall(function() add(d.Text) end)
 				end
+				if #bits > 20 then break end
 			end
 		end
-		local hard_bad = { "robux", "gamepass", "game pass", "devproduct", "developer product", "donate", "donation", "premium", "vip pass", "purchase pass", "buy pass" }
-		for _, t in ipairs(texts) do
-			for _, b in ipairs(hard_bad) do
-				if string.find(t, b, 1, true) then return true end
-			end
-			-- "Auto Sell" gamepass buttons/prompts are a common trap (user reported this)
-			if string.find(t, "autosell", 1, true) or string.find(t, "auto sell", 1, true) or string.find(t, "auto-sell", 1, true) then
-				return true
-			end
-			-- avoid obvious purchase prompts unless clearly "sell"
-			if string.find(t, "buy", 1, true) and not string.find(t, "sell", 1, true) then
-				if SD.config.safe_mode ~= false then return true end
-			end
-		end
-		return false
+	elseif type(inst) == "table" then
+		add(inst.name); add(inst.path)
 	end
-	SD.is_risky = is_risky_action
-
-	-- target resolution -------------------------------------------------------
-
-	local SELL_PATTERNS   = { "sell", "cashout", "cash out", "exchange", "turn in", "deposit" }
-	local SELL_FALLBACK   = {} -- removed: shop/store/vendor caused bad teleports
-	local CROWN_PATTERNS  = { "crown" }
-	local DIRT_PATTERNS   = { "dirt", "soil", "mud", "ore", "rock pile", "dig" }
-	local UPGRADE_PATTERNS = { "upgrade", "level up", "levelup", "improve" } -- no "buy/purchase" by default
-	local REBIRTH_PATTERNS = { "rebirth", "prestige", "ascend" } -- no generic "reset"
-	local TOOL_PATTERNS   = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator" }
-
-	local function safe_filter(list)
-		local out = {}
-		for _, v in ipairs(list) do
-			if not is_risky_action(v) then out[#out + 1] = v end
-		end
-		return out
+	for _, t in ipairs(bits) do
+		for _, b in ipairs(RISKY) do if has(t, b) then return true end end
+		-- block "buy" unless clearly sell-related
+		if has(t, "buy") and not has(t, "sell") then return true end
 	end
+	return false
+end
+SD.is_risky = F.is_risky
 
-function F.sell_target()
-		local custom = SD.config.sell_name
-		if custom and custom ~= "" then
-			local pr = safe_filter(filter_mine(SD.prompts_matching({ custom })))
-			if #pr > 0 then return pr[1] end
-			local cd = safe_filter(filter_mine(SD.clicks_matching({ custom })))
-			if #cd > 0 then return cd[1] end
-			local p = safe_filter(filter_mine(SD.find_parts({ custom })))
-			if #p > 0 then return p[1] end
+-- plot ownership ------------------------------------------------------------
+local function owner_matches(obj)
+	if not obj or not obj.Parent or not LP then return false end
+	local name, uid = LP.Name, LP.UserId
+	local okA, attrs = pcall(function() return obj:GetAttributes() end)
+	if okA and type(attrs) == "table" then
+		for k, v in pairs(attrs) do
+			local lk = lower(k)
+			if has(lk, "owner") or has(lk, "user") then
+				if v == LP or v == name or v == uid or tostring(v) == name or tostring(v) == tostring(uid) then return true end
+				if typeof and typeof(v) == "Instance" and v == LP then return true end
+			end
 		end
-		-- prompts/clicks are safer than teleporting to arbitrary parts
-		local pr = safe_filter(filter_mine(SD.prompts_matching(SELL_PATTERNS)))
-		if #pr > 0 then return pr[1] end
-		local cd = safe_filter(filter_mine(SD.clicks_matching(SELL_PATTERNS)))
-		if #cd > 0 then return cd[1] end
-		local parts = safe_filter(filter_mine(SD.find_parts(SELL_PATTERNS)))
-		if #parts > 0 then return parts[1] end
+	end
+	for _, key in ipairs({ "Owner", "owner", "Player", "player", "UserId", "OwnerId", "PlotOwner" }) do
+		local ch = obj:FindFirstChild(key)
+		if ch then
+			local ok, val = pcall(function() return ch.Value end)
+			if ok and (val == LP or val == name or val == uid or tostring(val) == name or tostring(val) == tostring(uid)) then return true end
+		end
+	end
+	return false
+end
+
+function F.my_plot()
+	if F._plot and F._plot.Parent and (now() - F._plotAt) < 10 then return F._plot end
+	F._plot = nil
+	if not LP then return nil end
+	local roots = {}
+	for _, name in ipairs({ "Plots", "Tycoons", "Bases", "Islands", "Farms", "PlayerPlots", "plots", "tycoons" }) do
+		local r = workspace:FindFirstChild(name)
+		if r then roots[#roots+1] = r end
+	end
+	if #roots == 0 then
+		for _, c in ipairs(workspace:GetChildren()) do
+			local n = lower(c.Name)
+			if has(n, "plot") or has(n, "tycoon") or has(n, "base") then roots[#roots+1] = c end
+		end
+	end
+	for _, root in ipairs(roots) do
+		local by = root:FindFirstChild(LP.Name)
+		if by then F._plot = by; break end
+		for _, plot in ipairs(root:GetChildren()) do
+			if owner_matches(plot) then F._plot = plot; break end
+		end
+		if F._plot then break end
+	end
+	if F._plot then F._plotAt = now(); F.status.plot = F._plot.Name else F.status.plot = "auto" end
+	return F._plot
+end
+
+function F.is_mine(inst)
+	if not SD.config.only_my_plot then return true end
+	local plot = F.my_plot()
+	if not plot then return true end
+	local obj = inst
+	if typeof(inst) == "Instance" then
+		if inst:IsA("ProximityPrompt") or inst:IsA("ClickDetector") then obj = inst.Parent end
+	end
+	if not obj then return true end
+	local ok, desc = pcall(function() return obj:IsDescendantOf(plot) end)
+	if ok and desc then return true end
+	pcall(function() if has(obj:GetFullName(), LP.Name) then desc = true end end)
+	if desc == true then return true end
+	local cur = obj
+	for _ = 1, 6 do
+		if not cur or cur == workspace then break end
+		if owner_matches(cur) then return true end
+		cur = cur.Parent
+	end
+	return false
+end
+
+-- crown ---------------------------------------------------------------------
+local function crown_excluded(inst)
+	local ok, path = pcall(function() return inst:GetFullName() end)
+	local p = ok and lower(path) or ""
+	for _, b in ipairs({ "feedback","report","suggest","complaint","donate","shop","setting","menu","gui","screen","interface","statue","decoration","spawnlocation","npc" }) do
+		if has(p, b) then return true end
+	end
+	if P then
+		for _, plr in ipairs(P:GetPlayers()) do
+			local ch = plr.Character
+			if ch then
+				local okD, isD = pcall(function() return inst:IsDescendantOf(ch) end)
+				if okD and isD then return true end
+			end
+		end
+	end
+	return false
+end
+
+local function crown_active(inst)
+	if not inst or not inst.Parent then return false end
+	local okW, inW = pcall(function() return inst:IsDescendantOf(workspace) end)
+	if not okW or not inW then return false end
+	if crown_excluded(inst) then return false end
+	local function vis(part)
+		if not part or not part:IsA("BasePart") then return false end
+		if part.Transparency >= 0.995 then return false end
+		local okS, sz = pcall(function() return part.Size end)
+		if okS and sz and sz.Magnitude < 0.05 then return false end
+		return true
+	end
+	if inst:IsA("BasePart") then return vis(inst) end
+	if inst:IsA("Model") or inst:IsA("Tool") or inst:IsA("Accessory") then
+		for _, d in ipairs(inst:GetDescendants()) do if d:IsA("BasePart") and vis(d) then return true end end
+	end
+	local rp = SD.resolve_part(inst)
+	return vis(rp)
+end
+
+local function strong_crown(inst)
+	local n = lower(inst and inst.Name or "")
+	if n == "crown" or n == "thecrown" or n == "eventcrown" or n == "crownpickup" or n == "kingcrown" then return true end
+	if has(n, "crown") and #n <= 24 and not has(n, "feedback") and not has(n, "report") then return true end
+	return false
+end
+
+function F.find_crown()
+	if F._crown and F._crown.Parent and (now() - F._crownAt) < 1.0 and crown_active(F._crown) then return F._crown end
+	F._crown = nil
+	local custom = SD.config.crown_object
+	if custom and custom ~= "" then
+		for _, inst in ipairs(SD.find_parts({ custom })) do if crown_active(inst) then F._crown = inst; F._crownAt = now(); return inst end end
+		for _, inst in ipairs(SD.find_models({ custom })) do if crown_active(inst) then F._crown = inst; F._crownAt = now(); return inst end end
 		return nil
 	end
+	SD.refresh()
+	for _, m in ipairs(SD.cache.models or {}) do if strong_crown(m) and crown_active(m) then F._crown = m; F._crownAt = now(); return m end end
+	for _, p in ipairs(SD.cache.parts or {}) do if strong_crown(p) and crown_active(p) then F._crown = p; F._crownAt = now(); return p end end
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if strong_crown(d) and crown_active(d) then F._crown = d; F._crownAt = now(); return d end
+	end
+	return nil
+end
 
-local crown_memo, crown_memo_at = nil, 0
+function F.goto_crown()
+	local c = F.find_crown()
+	if not c then F.status.crown = "waiting for crown event"; return false end
+	local ok = SD.tp(c)
+	F.status.crown = ok and "holding crown" or "tp failed"
+	return ok
+end
 
-	local function crown_path_excluded(inst)
-		local ok, path = pcall(function() return inst:GetFullName() end)
-		if not ok or not path then return false end
-		local p = string.lower(path)
-		local bad = { "feedback", "report", "suggest", "complaint", "donate", "shop", "settings", "menu", "gui", "screen", "interface", "leaderboarddisplay", "statue", "decoration", "spawnlocation" }
-		for _, b in ipairs(bad) do
-			if string.find(p, b, 1, true) then return true end
+-- selling -------------------------------------------------------------------
+local SELL_NAMES = { "sell", "cashout", "cash out", "exchange", "deposit", "turn in", "turnin", "selldirt", "sell_dirt" }
+local function is_sell_prompt(p)
+	if not p or not p.Parent or F.is_risky(p) then return false end
+	local txt = lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or "") .. " " .. (p.Parent.Name or ""))
+	if not hasAny(txt, { "sell","cashout","cash out","exchange","deposit","turn in","turnin" }) then return false end
+	if hasAny(txt, { "autosell","auto sell","auto-sell","gamepass","robux","pass","toggle" }) then return false end
+	return true
+end
+
+local function safe_remote(r)
+	if not r or F.is_risky(r) then return false end
+	local n = lower((r.name or "") .. " " .. (r.path or ""))
+	if hasAny(n, { "autosell","auto sell","auto_sell","toggle","buy","purchase","robux","gamepass","devproduct","marketplace","promptpurchase" }) then return false end
+	return true
+end
+
+function F.sell_once()
+	-- explicit override
+	local ovr = SD.config.sell_remote
+	if ovr and ovr ~= "" then
+		for _, r in ipairs(SD.remotes_matching({ ovr })) do
+			if safe_remote(r) and SD.probe_remote(r, {}) then F.status.sell = "remote OK"; return true end
 		end
-		-- never target crowns held by players
-		local players = SD.Players
-		if players then
-			for _, plr in ipairs(players:GetPlayers()) do
-				local ch = plr.Character
-				if ch then
-					local okD, isD = pcall(function() return inst:IsDescendantOf(ch) end)
-					if okD and isD then return true end
-				end
-			end
-		end
-		return false
 	end
 
-	local function crown_is_active(inst)
-		if not inst or not inst.Parent then return false end
-		local okW, inWorld = pcall(function() return inst:IsDescendantOf(workspace) end)
-		if not okW or not inWorld then return false end
-		if crown_path_excluded(inst) then return false end
-
-		local function part_visible(p)
-			if not p or not p:IsA("BasePart") then return false end
-			if p.Transparency >= 0.995 then return false end
-			local okSize, sz = pcall(function() return p.Size end)
-			if okSize and sz and sz.Magnitude < 0.05 then return false end
-			return true
-		end
-
-		if inst:IsA("BasePart") then
-			return part_visible(inst)
-		elseif inst:IsA("Model") then
-			if inst.PrimaryPart and part_visible(inst.PrimaryPart) then return true end
-			for _, d in ipairs(inst:GetDescendants()) do
-				if d:IsA("BasePart") and part_visible(d) then return true end
-			end
-			return false
-		elseif inst:IsA("Tool") or inst:IsA("Accessory") then
-			for _, d in ipairs(inst:GetDescendants()) do
-				if d:IsA("BasePart") and part_visible(d) then return true end
-			end
-			-- a tool/accessory in workspace can be a pickup crown
-			return inst.Parent == workspace or (inst.Parent and inst.Parent.Parent == workspace)
-		end
-
-		local p = SD.resolve_part(inst)
-		return part_visible(p)
-	end
-
-	local function strong_crown_name(inst)
-		if not inst then return false end
-		local n = string.lower(tostring(inst.Name or ""))
-		if n == "crown" or n == "thecrown" or n == "eventcrown" or n == "crownpickup" or n == "kingcrown" then return true end
-		-- allow "Crown" as a clear token in short names, avoid random matches
-		if string.find(n, "crown", 1, true) and #n <= 24 and not string.find(n, "feedback", 1, true) and not string.find(n, "report", 1, true) then
-			return true
-		end
-		return false
-	end
-
-	function F.crown_target(opts)
-		opts = opts or {}
-		-- Always require an active, real crown for auto behavior (safety: never TP to random objects)
-		local require_active = true
-
-		if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 1.5 then
-			if crown_is_active(crown_memo) then return crown_memo end
-			crown_memo = nil
-		end
-
-		local custom = SD.config.crown_name
-		if custom and custom ~= "" then
-			local candidates = {}
-			for _, p in ipairs(SD.find_parts({ custom })) do candidates[#candidates + 1] = p end
-			for _, m in ipairs(SD.find_models({ custom })) do candidates[#candidates + 1] = m end
-			for _, c in ipairs(candidates) do
-				if crown_is_active(c) then
-					crown_memo, crown_memo_at = c, os.clock()
-					return c
-				end
-			end
-			return nil
-		end
-
-		-- Auto-detect: ONLY strong crown-named objects in workspace (no billboard text scan, no loose matches)
-		local candidates = {}
+	-- prompts on my plot from anywhere
+	if SD.caps.fireprompt then
 		SD.refresh()
-		for _, m in ipairs(SD.cache.models) do
-			if strong_crown_name(m) and crown_is_active(m) then candidates[#candidates + 1] = m end
-		end
-		for _, p in ipairs(SD.cache.parts) do
-			if strong_crown_name(p) and crown_is_active(p) then candidates[#candidates + 1] = p end
-		end
-
-		-- if nothing found, try a very narrow scan of direct workspace children
-		if #candidates == 0 then
-			for _, d in ipairs(workspace:GetDescendants()) do
-				if strong_crown_name(d) and crown_is_active(d) then
-					candidates[#candidates + 1] = d
-					break
-				end
-			end
-		end
-
-		local found = candidates[1]
-		if found then crown_memo, crown_memo_at = found, os.clock() end
-		return found
-	end
-
-function F.dirt_target()
-	    local hrp = SD.get_hrp()
-	    local parts = filter_mine(SD.find_parts(DIRT_PATTERNS))
-	    if #parts == 0 then parts = SD.find_parts(DIRT_PATTERNS) end
-	    if #parts == 0 then return nil end
-	    if not hrp then return parts[1] end
-	    return (SD.nearest_part(parts, hrp.Position))
-	end
-
-function F.upgrade_target()
-		local pr = safe_filter(filter_mine(SD.prompts_matching(UPGRADE_PATTERNS)))
-		if #pr > 0 then return pr[1] end
-		local cd = safe_filter(filter_mine(SD.clicks_matching(UPGRADE_PATTERNS)))
-		if #cd > 0 then return cd[1] end
-		return nil
-	end
-
-	function F.rebirth_target()
-		local pr = safe_filter(filter_mine(SD.prompts_matching(REBIRTH_PATTERNS)))
-		if #pr > 0 then return pr[1] end
-		local cd = safe_filter(filter_mine(SD.clicks_matching(REBIRTH_PATTERNS)))
-		if #cd > 0 then return cd[1] end
-		return nil
-	end
-
-function F.dig_tool()
-    local ch = SD.get_char()
-    if not ch then return nil end
-    local patterns = TOOL_PATTERNS
-    if SD.config.dig_tool_name and SD.config.dig_tool_name ~= "" then
-        patterns = { SD.config.dig_tool_name }
-    end
-
-    local equipped = ch:FindFirstChildOfClass("Tool")
-    if equipped and SD.match(equipped.Name, patterns) then return equipped end
-
-    local bp = SD.plr:FindFirstChild("Backpack")
-    if bp then
-        for _, t in ipairs(bp:GetChildren()) do
-            if t:IsA("Tool") and SD.match(t.Name, patterns) then
-                local hum = SD.get_hum()
-                if hum then pcall(function() hum:EquipTool(t) end) end
-                return t
-            end
-        end
-    end
-    return equipped
-end
-
--- movement helpers --------------------------------------------------------
-
-function F.visit(inst, opts)
-		opts = opts or {}
-		if is_risky_action(inst) then return false, 0 end
-		local part = SD.resolve_part(inst)
-		if not part then return false, 0 end
-		local hrp = SD.get_hrp()
-		if not hrp then return false, 0 end
-
-		if opts.allow_teleport == false then
-			local fired = SD.interact(inst)
-			if fired == 0 then fired = SD.interact_near(part.Position, opts.radius or 16) end
-			return fired > 0, fired
-		end
-
-		if opts.anchor ~= false and not SD.state.anchor then
-			SD.state.anchor = hrp.CFrame
-		end
-
-		local offset = CFrame.new(0, opts.y_offset or 3, 0)
-		SD.tp(part.CFrame * offset)
-		task.wait(opts.settle or 0.22)
-
-		local fired = SD.interact_near(part.Position, opts.radius or 16)
-		if fired == 0 then fired = SD.interact(inst) end
-		return true, fired
-	end
-
-function F.return_home()
-    if SD.state.anchor then SD.tp(SD.state.anchor) end
-end
-
--- core actions ------------------------------------------------------------
-
-function F.fire_sell_remotes()
-		-- Fire sell/cashout remotes (no teleporting). Prefer this over physical zones.
-		-- Strict matching: "dirt" alone is too broad in this game and can hit wrong remotes.
-		local names = { "sell", "cashout", "cash out", "exchange", "deposit", "turnin", "turn in", "selldirt", "sell_dirt" }
-		local list = SD.remotes_matching(names)
 		local fired = 0
-		for _, r in ipairs(list) do
-			local n = string.lower((r.name or "") .. " " .. (r.path or ""))
-			local blocked = string.find(n, "rebirth", 1, true)
-				or string.find(n, "prestige", 1, true)
-				or string.find(n, "reset", 1, true)
-				or string.find(n, "buy", 1, true)
-				or string.find(n, "purchase", 1, true)
-				or string.find(n, "robux", 1, true)
-				or string.find(n, "gamepass", 1, true)
-				or string.find(n, "devproduct", 1, true)
-				or string.find(n, "autosell", 1, true)
-				or string.find(n, "auto sell", 1, true)
-				or string.find(n, "auto_sell", 1, true)
-				or string.find(n, "toggle", 1, true)
-				or string.find(n, "prompt", 1, true) and string.find(n, "pass", 1, true)
-			if not blocked then
-				local ok = SD.probe_remote(r, {})
-				if ok then
-					fired = fired + 1
-					if fired >= 2 then break end
-				end
-				task.wait(0.05)
+		for _, p in ipairs(SD.cache.prompts or {}) do
+			if F.is_mine(p) and is_sell_prompt(p) then
+				if pcall(fireproximityprompt, p) then fired = fired + 1 end
 			end
 		end
-		return fired
+		if fired == 0 then
+			for _, p in ipairs(SD.prompts_matching(SELL_NAMES) or {}) do
+				if F.is_mine(p) and is_sell_prompt(p) then
+					if pcall(fireproximityprompt, p) then fired = fired + 1 end
+				end
+			end
+		end
+		if fired > 0 then F.status.sell = "sold (" .. fired .. " prompt)"; return true end
 	end
 
-	local function is_real_sell_prompt(p)
-		if not p or not p.Parent then return false end
-		if is_risky_action(p) then return false end
-		local name = string.lower(p.Name or "")
-		local action = string.lower(p.ActionText or "")
-		local objt = string.lower(p.ObjectText or "")
-		local parent = string.lower(p.Parent.Name or "")
-		local text = name .. " " .. action .. " " .. objt .. " " .. parent
-		-- must look like selling, not auto-sell gamepass/toggle
-		local sells = string.find(text, "sell", 1, true) or string.find(text, "cashout", 1, true) or string.find(text, "cash out", 1, true) or string.find(text, "exchange", 1, true) or string.find(text, "deposit", 1, true) or string.find(text, "turn in", 1, true) or string.find(text, "turnin", 1, true)
-		if not sells then return false end
-		if string.find(text, "autosell", 1, true) or string.find(text, "auto sell", 1, true) or string.find(text, "auto-sell", 1, true) then return false end
-		if string.find(text, "gamepass", 1, true) or string.find(text, "robux", 1, true) or string.find(text, "pass", 1, true) then return false end
-		return true
+	-- click detectors
+	if SD.caps.fireclick then
+		for _, c in ipairs(SD.clicks_matching(SELL_NAMES) or {}) do
+			if F.is_mine(c) and not F.is_risky(c) then
+				if pcall(fireclickdetector, c) then F.status.sell = "sold (click)"; return true end
+			end
+		end
 	end
 
-	local function safe_sell_remote(r)
-		if not r then return false end
-		local n = string.lower((r.name or "") .. " " .. (r.path or ""))
-		if string.find(n, "autosell", 1, true) or string.find(n, "auto sell", 1, true) or string.find(n, "auto_sell", 1, true) then return false end
-		if string.find(n, "toggle", 1, true) then return false end
-		if string.find(n, "gamepass", 1, true) or string.find(n, "robux", 1, true) or string.find(n, "devproduct", 1, true) then return false end
-		if string.find(n, "buy", 1, true) or string.find(n, "purchase", 1, true) then return false end
-		if string.find(n, "promptpurchase", 1, true) or string.find(n, "marketplace", 1, true) then return false end
-		return true
+	-- strict sell remotes
+	for _, names in ipairs({ { "selldirt","sell_dirt","sellall","sell_all" }, { "sell","cashout","cash_out","deposit" } }) do
+		for _, r in ipairs(SD.remotes_matching(names) or {}) do
+			if safe_remote(r) then
+				local n = lower(r.name or "")
+				if has(n, "sell") or has(n, "cash") or has(n, "deposit") then
+					if SD.probe_remote(r, {}) then F.status.sell = "remote OK"; return true end
+				end
+			end
+		end
 	end
 
-	function F.sell_once()
-		-- 1) explicit sell remote override (no teleport)
-		local rname = SD.config.sell_remote
-		if rname and rname ~= "" then
-			local list = SD.remotes_matching({ rname })
-			for _, r in ipairs(list) do
-				if safe_sell_remote(r) then
-					local ok = SD.probe_remote(r, {})
-					if ok then return true end
-				end
-			end
-		end
+	F.status.sell = "waiting (scan/setup if stuck)"
+	return false
+end
 
-		-- 2) fire actual sell prompts on MY plot from ANY distance (executor fireproximityprompt)
-		if SD.caps.fireprompt then
-			SD.refresh()
-			local candidates = {}
-			for _, p in ipairs(SD.cache.prompts) do
-				if F.is_mine(p) and is_real_sell_prompt(p) then candidates[#candidates + 1] = p end
-			end
-			if #candidates == 0 then
-				for _, p in ipairs(SD.prompts_matching(SELL_PATTERNS)) do
-					if F.is_mine(p) and is_real_sell_prompt(p) then candidates[#candidates + 1] = p end
-				end
-			end
-			if #candidates > 0 then
-				local fired = 0
-				for i = 1, math.min(3, #candidates) do
-					local ok = pcall(fireproximityprompt, candidates[i])
-					if ok then fired = fired + 1 end
-				end
-				if fired > 0 then return true end
+-- collect -------------------------------------------------------------------
+function F.collect_once()
+	if not SD.caps.fireprompt then F.status.collect = "no prompt support"; return 0 end
+	SD.refresh()
+	local n = 0
+	for _, p in ipairs(SD.cache.prompts or {}) do
+		if F.is_mine(p) and not F.is_risky(p) then
+			local txt = lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or "") .. " " .. (p.Parent and p.Parent.Name or ""))
+			pcall(function() txt = txt .. " " .. lower(p:GetFullName()) end)
+			local bad = hasAny(txt, { "sell","cashout","exchange","upgrade","buy","shop","extractor","extract","machine","processor","autosell","auto sell","gamepass","robux" })
+			local good = hasAny(txt, { "collect","claim","pickup","pick up","grab","take","reward","ball","drop","loot","board","dirt" })
+			-- "dirt" pickup only if not a sell/extractor context; keep conservative
+			if has(txt, "sell") or has(txt, "extractor") then good = false end
+			if not bad and good then
+				if pcall(fireproximityprompt, p) then n = n + 1 end
 			end
 		end
-
-		-- 3) click detectors on my plot (any distance)
-		if SD.caps.fireclick then
-			SD.refresh()
-			for _, c in ipairs(SD.clicks_matching(SELL_PATTERNS)) do
-				if F.is_mine(c) and not is_risky_action(c) and safe_sell_remote({ name = c.Name or "", path = c.Parent and c.Parent:GetFullName() or c.Name or "" }) then
-					local ok = pcall(fireclickdetector, c)
-					if ok then return true end
-				end
-			end
-		end
-
-		-- 4) strict sell remotes (try several common names/patterns)
-		if SD.config.auto_sell_remote_fallback ~= false then
-			local tries = {
-				{ "selldirt", "sell_dirt", "sellall", "sell_all" },
-				{ "sell", "cashout", "cash_out", "deposit" },
-			}
-			for _, names in ipairs(tries) do
-				local list = SD.remotes_matching(names)
-				for _, r in ipairs(list) do
-					if safe_sell_remote(r) then
-						-- prefer remotes explicitly about selling
-						local n = string.lower(r.name or "")
-						local looks = string.find(n, "sell", 1, true) or string.find(n, "cash", 1, true) or string.find(n, "deposit", 1, true)
-						if looks then
-							local ok = SD.probe_remote(r, {})
-							if ok then return true end
-						end
-					end
-				end
-			end
-		end
-
-		-- 5) optional teleport (OFF by default) - last resort
-		if not SD.config.auto_sell_teleport then return false end
-		if not SD.gate("sell_tp", math.max(5, (SD.config.auto_sell_delay or 2) * 2)) then return false end
-		local target = F.sell_target()
-		if target and F.is_mine(target) and (is_real_sell_prompt(target) or not is_risky_action(target)) then
-			local ok = F.visit(target, { radius = 16, settle = 0.2, allow_teleport = true, anchor = false })
-			return ok
-		end
-		return false
 	end
+	F.status.collect = n > 0 and ("collected " .. n) or "idle"
+	return n
+end
 
-function F.dig_click()
-	    local hrp = SD.get_hrp()
-	    if not hrp then return 0 end
-	    SD.refresh()
-	    local fired = 0
-	    for _, c in ipairs(SD.cache.clicks) do
-	        if F.is_mine(c) then
-	            local part = SD.resolve_part(c)
-	            if part then
-	                local d = (part.Position - hrp.Position).Magnitude
-	                if d <= 26 then
-	                    local pname = c.Parent and c.Parent.Name or ""
-	                    if SD.match(part.Name, DIRT_PATTERNS) or SD.match(pname, DIRT_PATTERNS) then
-	                        pcall(fireclickdetector, c)
-	                        fired = fired + 1
-	                    end
-	                end
-	            end
-	        end
-	    end
-	    return fired
+-- dig -----------------------------------------------------------------------
+local TOOL_PATTERNS = { "shovel", "spade", "dig", "pickaxe", "drill", "excavator", "scoop" }
+function F.dig_tool()
+	local ch = SD.get_char(); if not ch then return nil end
+	local custom = SD.config.dig_tool
+	local pats = (custom and custom ~= "") and { custom } or TOOL_PATTERNS
+	local eq = ch:FindFirstChildOfClass("Tool")
+	if eq and SD.match(eq.Name, pats) then return eq end
+	local bp = LP and LP:FindFirstChild("Backpack")
+	if bp then
+		for _, t in ipairs(bp:GetChildren()) do
+			if t:IsA("Tool") and SD.match(t.Name, pats) then
+				local hum = SD.get_hum()
+				if hum then pcall(function() hum:EquipTool(t) end) end
+				return t
+			end
+		end
 	end
+	return eq
+end
 
 function F.dig_once()
-    local mode = SD.config.dig_mode or "both"
-    local acted = false
-
-    if mode == "tool" or mode == "both" then
-        local tool = F.dig_tool()
-        if tool then
-            pcall(function() tool:Activate() end)
-            acted = true
-        end
-    end
-
-    if mode == "click" or mode == "both" then
-        if F.dig_click() > 0 then acted = true end
-    end
-
-    if not acted and SD.caps.fireprompt then
-	        local hrp = SD.get_hrp()
-	        if hrp then
-	            SD.refresh()
-	            for _, p in ipairs(SD.cache.prompts) do
-	                if F.is_mine(p) then
-	                    local part = SD.resolve_part(p)
-	                    if part and (part.Position - hrp.Position).Magnitude <= 22 then
-	                        local pname = p.Parent and p.Parent.Name or ""
-	                        if SD.match(pname, DIRT_PATTERNS) or SD.match(p.Name, DIRT_PATTERNS) then
-	                            pcall(fireproximityprompt, p)
-	                            acted = true
-	                        end
-	                    end
-	                end
-	            end
-	        end
-	    end
-
-    return acted
-end
-
-function F.collect_once()
-		local n = 0
-		if not SD.caps.fireprompt then return 0 end
-		SD.refresh()
-		for _, p in ipairs(SD.cache.prompts) do
-			if F.is_mine(p) and not is_risky_action(p) then
-				local pname = string.lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or ""))
-				local parentName = p.Parent and string.lower(p.Parent.Name or "") or ""
-				local path = ""
-				pcall(function() path = string.lower(p:GetFullName()) end)
-				local text = pname .. " " .. parentName .. " " .. path
-				-- collect is for pickups/drops/rewards/boards/balls only - NEVER sell/upgrade/extractor
-				local looks_sell = string.find(text, "sell", 1, true) or string.find(text, "cashout", 1, true) or string.find(text, "exchange", 1, true)
-				local looks_upgrade = string.find(text, "upgrade", 1, true) or string.find(text, "buy", 1, true) or string.find(text, "shop", 1, true)
-				local looks_extractor = string.find(text, "extractor", 1, true) or string.find(text, "extract", 1, true) or string.find(text, "machine", 1, true) or string.find(text, "processor", 1, true)
-				local looks_collect = string.find(text, "collect", 1, true) or string.find(text, "claim", 1, true) or string.find(text, "pickup", 1, true) or string.find(text, "pick up", 1, true) or string.find(text, "grab", 1, true) or string.find(text, "take", 1, true) or string.find(text, "reward", 1, true) or string.find(text, "ball", 1, true) or string.find(text, "drop", 1, true) or string.find(text, "loot", 1, true) or string.find(text, "board", 1, true)
-				if not looks_sell and not looks_upgrade and not looks_extractor and looks_collect then
-					local ok = pcall(fireproximityprompt, p)
-					if ok then n = n + 1 end
+	local acted = false
+	local tool = F.dig_tool()
+	if tool then pcall(function() tool:Activate() end); acted = true end
+	-- also fire dirt click detectors/prompts on my plot (nearby)
+	if SD.caps.fireclick then
+		local hrp = SD.get_hrp()
+		for _, c in ipairs(SD.cache.clicks or {}) do
+			if F.is_mine(c) and not F.is_risky(c) then
+				local part = SD.resolve_part(c)
+				local d = (hrp and part) and (part.Position - hrp.Position).Magnitude or 999
+				local pn = lower((part and part.Name or "") .. " " .. (c.Parent and c.Parent.Name or ""))
+				if d <= 30 and (has(pn, "dirt") or has(pn, "dig") or has(pn, "mud") or has(pn, "pile")) then
+					if pcall(fireclickdetector, c) then acted = true end
 				end
 			end
 		end
-		return n
 	end
+	F.status.dig = acted and "digging" or "waiting (equip tool)"
+	return acted
+end
 
-function F.upgrade_once()
-		if SD.config.safe_mode then return false end -- upgrades can spend in-game currency; enable explicitly by disabling safe mode? safer to keep opt-in via config
-		local t = F.upgrade_target()
-		if not t then return false end
-		local ok = F.visit(t, { radius = 16, settle = 0.2, allow_teleport = SD.config.auto_sell_teleport == true }) -- reuse teleport permission concept? better separate
-		return ok
-	end
-
-	function F.rebirth_once()
-		-- destructive: only when explicitly enabled (auto_rebirth toggle controls scheduling)
-		local t = F.rebirth_target()
-		if not t then return false end
-		local ok = F.visit(t, { radius = 16, settle = 0.2, allow_teleport = false })
-		return ok
-	end
-
-function F.goto_crown(opts)
-		opts = opts or {}
-		local require_active = opts.require_active
-		if require_active == nil then require_active = SD.config.tp_crown_only_active end
-
-		local t = F.crown_target({ require_active = require_active })
-		if not t then
-			-- Only fall back to leaderboard leader when the user explicitly allows
-			-- non-event behavior (manual override). Auto TP must not chase players
-			-- when no crown event/object is active.
-			if not require_active and opts.allow_leader_fallback then
-				local lead = F.leader()
-				if lead then
-					local ch = lead.Character
-					if ch then
-						local hrp = ch:FindFirstChild("HumanoidRootPart")
-						if hrp then
-							SD.tp(hrp.CFrame * CFrame.new(0, 0, 3))
-							return true
-						end
-					end
-				end
-			end
-			return false
+-- upgrades (manual/safe) ----------------------------------------------------
+function F.buy_upgrades_once()
+	SD.refresh()
+	local n = 0
+	for _, p in ipairs(SD.prompts_matching({ "upgrade", "level up", "improve" }) or {}) do
+		if F.is_mine(p) and not F.is_risky(p) then
+			if pcall(fireproximityprompt, p) then n = n + 1 end
 		end
-		local ok = F.visit(t, { radius = 18, settle = 0.25, anchor = false })
-		return ok
 	end
-
-function F.leader()
-    local best, bestv = nil, -math.huge
-    for _, plr in ipairs(SD.Players:GetPlayers()) do
-        if plr ~= SD.plr then
-            local ls = plr:FindFirstChild("leaderstats")
-            if ls then
-                for _, v in ipairs(ls:GetChildren()) do
-                    if v:IsA("ValueBase") and type(v.Value) == "number" then
-                        if v.Value > bestv then best, bestv = plr, v.Value end
-                    end
-                end
-            end
-        end
-    end
-    return best
+	F.status.upgrades = n > 0 and ("triggered " .. n) or "none found"
+	return n
 end
 
-function F.goto_sell()
-    local t = F.sell_target()
-    if not t then return false end
-    local ok = F.visit(t, { radius = 18, anchor = false })
-    return ok
+-- ESP -----------------------------------------------------------------------
+local function espAdd(bucket, key, adornee, color)
+	if not adornee then return end
+	if F.esp[bucket][key] and F.esp[bucket][key].Parent then return end
+	local h = Instance.new("Highlight")
+	h.Name = "SD_" .. bucket
+	h.FillColor = color
+	h.FillTransparency = 0.65
+	h.OutlineColor = color
+	h.OutlineTransparency = 0
+	h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	h.Adornee = adornee
+	h.Parent = SD.gui and SD.gui.root or LP:FindFirstChild("PlayerGui")
+	F.esp[bucket][key] = h
 end
-
-function F.goto_dirt()
-    local t = F.dirt_target()
-    if not t then return false end
-    return SD.tp(t.CFrame * CFrame.new(0, 4, 0))
-end
-
--- ESP ---------------------------------------------------------------------
-
-F.esp_store = { crown = {}, sell = {}, dirt = {}, players = {} }
-
-local ESP_COLORS = {
-    crown   = Color3.fromRGB(255, 196, 64),
-    sell    = Color3.fromRGB(56, 224, 160),
-    dirt    = Color3.fromRGB(120, 170, 255),
-    players = Color3.fromRGB(255, 92, 110),
-}
-
-local function esp_add(bucket_name, inst, color)
-    local bucket = F.esp_store[bucket_name]
-    if not bucket then return end
-    local part = SD.resolve_part(inst)
-    if not part then return end
-    local key = part:GetFullName()
-    if bucket[key] and bucket[key].Parent then return end
-
-    local h = Instance.new("Highlight")
-    h.Name = "SD_ESP"
-    h.FillColor = color
-    h.FillTransparency = 0.6
-    h.OutlineColor = color
-    h.OutlineTransparency = 0
-    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    h.Adornee = part
-    h.Parent = SD.gui.root or SD.plr:FindFirstChild("PlayerGui")
-    bucket[key] = h
-end
-
-local function esp_clear(bucket_name)
-    local bucket = F.esp_store[bucket_name]
-    if not bucket then return end
-    for k, h in pairs(bucket) do
-        if h then pcall(function() h:Destroy() end) end
-        bucket[k] = nil
-    end
+local function espClear(bucket)
+	for k, h in pairs(F.esp[bucket] or {}) do pcall(function() h:Destroy() end); F.esp[bucket][k] = nil end
 end
 
 function F.esp_tick()
-    if SD.config.esp_crown then
-        local t = F.crown_target()
-        if t then esp_add("crown", t, ESP_COLORS.crown) end
-    else
-        esp_clear("crown")
-    end
-
-    if SD.config.esp_sell then
-        local t = F.sell_target()
-        if t then esp_add("sell", t, ESP_COLORS.sell) end
-    else
-        esp_clear("sell")
-    end
-
-    if SD.config.esp_dirt then
-        for _, p in ipairs(SD.find_parts(DIRT_PATTERNS)) do
-            esp_add("dirt", p, ESP_COLORS.dirt)
-        end
-    else
-        esp_clear("dirt")
-    end
-
-    if SD.config.esp_players then
-        for _, plr in ipairs(SD.Players:GetPlayers()) do
-            if plr ~= SD.plr and plr.Character then
-                local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
-                if hrp then esp_add("players", hrp, ESP_COLORS.players) end
-            end
-        end
-    else
-        esp_clear("players")
-    end
-end
-
--- utility features --------------------------------------------------------
-
-function F.anti_afk_enable()
-    if F._afk_conn then return end
-    F._afk_conn = SD.plr.Idled:Connect(function()
-        if not SD.config.anti_afk then return end
-        local vu = SD.VirtualUser
-        if vu then
-            pcall(function()
-                vu:CaptureController()
-                vu:ClickButton2(Vector2.new())
-            end)
-        end
-        local hum = SD.get_hum()
-        if hum then pcall(function() hum.Jump = true end) end
-    end)
-end
-
-local LIGHTING_KEYS = { "Brightness", "ClockTime", "GlobalShadows", "FogEnd", "Ambient", "OutdoorAmbient" }
-F._lighting_backup = nil
-
-function F.fullbright_apply()
-    local L = SD.Lighting
-    if not L then return end
-    if not F._lighting_backup then
-        F._lighting_backup = {}
-        for _, k in ipairs(LIGHTING_KEYS) do
-            F._lighting_backup[k] = L[k]
-        end
-    end
-    L.Brightness = 2
-    L.ClockTime = 14
-    L.GlobalShadows = false
-    L.FogEnd = 100000
-    L.Ambient = Color3.fromRGB(178, 178, 178)
-    L.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
-end
-
-function F.fullbright_restore()
-    local L = SD.Lighting
-    if not L or not F._lighting_backup then return end
-    for k, v in pairs(F._lighting_backup) do
-        pcall(function() L[k] = v end)
-    end
-    F._lighting_backup = nil
-end
-
-local FX_CLASSES = { "BlurEffect", "BloomEffect", "SunRaysEffect", "ColorCorrectionEffect", "DepthOfFieldEffect" }
-F._fx_backup = nil
-
-function F.fps_boost_apply()
-    local L = SD.Lighting
-    if not L then return end
-    F._fx_backup = F._fx_backup or {}
-    for _, fx in ipairs(L:GetChildren()) do
-        if table.find(FX_CLASSES, fx.ClassName) and fx.Enabled then
-            F._fx_backup[fx] = true
-            fx.Enabled = false
-        end
-    end
-    pcall(function()
-        local ugs = UserSettings():GetService("UserGameSettings")
-        ugs.SavedQualitySetting = Enum.SavedQualitySetting.QualityLevel1
-    end)
-end
-
-function F.fps_boost_restore()
-    if not F._fx_backup then return end
-    for fx in pairs(F._fx_backup) do
-        if fx and fx.Parent then pcall(function() fx.Enabled = true end) end
-    end
-    F._fx_backup = nil
-end
-
--- rejoin / hop (F.rejoin and F.server_hop defined below with queue_on_teleport support)
-
-function F.auto_rejoin_enable()
-    if F._rejoin_conn then return end
-    local CoreGui = SD.safe(function() return game:GetService("CoreGui") end)
-    local prompt = CoreGui and CoreGui:FindFirstChild("RobloxPromptGui")
-    local overlay = prompt and prompt:FindFirstChild("promptOverlay")
-
-    if overlay then
-        F._rejoin_conn = overlay.ChildAdded:Connect(function(child)
-            if not SD.config.auto_rejoin then return end
-            if child.Name == "ErrorPrompt" or child.Name == "GenericMessagePrompt" then
-                task.delay(1.5, F.rejoin)
-            end
-        end)
-    end
-
-    SD.plr.AncestryChanged:Connect(function()
-        if not SD.config.auto_rejoin then return end
-        if not SD.plr:IsDescendantOf(game) then F.rejoin() end
-    end)
-end
-
-local function queue_self()
-		if SD.state.queued_tp then return end
-		if not SD.config.queue_on_teleport then return end
-		if not SD.caps.queue_teleport then return end
-		-- Re-execute from the same hosted source if the user loaded via HttpGet,
-		-- or just re-run the global entry if present. We store a small bootstrap.
-		local url = rawget(getgenv(), "SD_LOADSTRING_URL")
-		local payload
-		if type(url) == "string" and url ~= "" then
-			payload = ("loadstring(game:HttpGet(%q))()"):format(url)
-		else
-			-- no known URL; nothing safe to queue
-			return
+	if SD.config.esp_crown then
+		local c = F.find_crown()
+		if c then espAdd("crown", "active", c, Color3.fromRGB(255, 200, 64)) else espClear("crown") end
+	else espClear("crown") end
+	if SD.config.esp_players then
+		local seen = {}
+		if P then
+			for _, plr in ipairs(P:GetPlayers()) do
+				if plr ~= LP and plr.Character then
+					seen[plr.Name] = true
+					espAdd("players", plr.Name, plr.Character, Color3.fromRGB(255, 110, 120))
+				end
+			end
 		end
-		local ok = pcall(function() queue_on_teleport(payload) end)
-		if ok then SD.state.queued_tp = true end
-	end
+		for k, h in pairs(F.esp.players) do if not seen[k] then pcall(function() h:Destroy() end); F.esp.players[k] = nil end end
+	else espClear("players") end
+end
 
-	function F.server_hop()
-		queue_self()
-		local ok, body = pcall(function()
-			return game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?limit=100&excludeFullGames=true"):format(game.PlaceId))
-		end)
-		if not ok or not body then
-			SD.notify("hop failed: http blocked", "err")
-			return
-		end
-		local dec_ok, data = pcall(function() return SD.HttpService:JSONDecode(body) end)
-		if not dec_ok or not data or not data.data or #data.data == 0 then
-			SD.notify("no servers found", "warn")
-			return
-		end
-		local pick = data.data[math.random(1, #data.data)]
-		SD.notify("hopping to " .. tostring(pick.id):sub(1, 8), "info")
-		pcall(function()
-			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, SD.plr)
+-- utility -------------------------------------------------------------------
+function F.apply_speed()
+	local hum = SD.get_hum(); if not hum then return end
+	if SD.config.speed_lock then hum.WalkSpeed = tonumber(SD.config.walkspeed) or 24 end
+	if SD.config.jump_lock then hum.UseJumpPower = true; hum.JumpPower = tonumber(SD.config.jumppower) or 50 end
+end
+
+F._noclipConn = nil
+function F.set_noclip(on)
+	SD.config.noclip = on and true or false
+	if F._noclipConn then F._noclipConn:Disconnect(); F._noclipConn = nil end
+	if not on then return end
+	local RS = SD.RunService
+	if RS and RS.Stepped then
+		F._noclipConn = RS.Stepped:Connect(function()
+			if not SD.config.noclip then return end
+			local ch = SD.get_char(); if not ch then return end
+			for _, p in ipairs(ch:GetDescendants()) do
+				if p:IsA("BasePart") then p.CanCollide = false end
+			end
 		end)
 	end
+end
 
-	function F.rejoin()
-		if SD.state.rejoin_guard then return end
-		SD.state.rejoin_guard = true
-		queue_self()
-		SD.notify("rejoining...", "warn")
-		task.wait(0.5)
-		pcall(function()
-			SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr)
-		end)
+function F.fullbright(on)
+	local L = SD.Lighting; if not L then return end
+	if on then
+		F._lb = F._lb or { B=L.Brightness, C=L.ClockTime, G=L.GlobalShadows, F=L.FogEnd, A=L.Ambient }
+		L.Brightness = 2; L.ClockTime = 14; L.GlobalShadows = false; L.FogEnd = 100000
+		L.Ambient = Color3.fromRGB(178,178,178); L.OutdoorAmbient = L.Ambient
+	else
+		if F._lb then pcall(function() L.Brightness=F._lb.B; L.ClockTime=F._lb.C; L.GlobalShadows=F._lb.G; L.FogEnd=F._lb.F; L.Ambient=F._lb.A end); F._lb=nil end
 	end
+end
 
--- background tasks --------------------------------------------------------
+function F.fps_boost(on)
+	local L = SD.Lighting; if not L then return end
+	if on then
+		F._fx = F._fx or {}
+		for _, fx in ipairs(L:GetChildren()) do
+			if (fx:IsA("BlurEffect") or fx:IsA("BloomEffect") or fx:IsA("SunRaysEffect") or fx:IsA("ColorCorrectionEffect") or fx:IsA("DepthOfFieldEffect")) and fx.Enabled then
+				F._fx[fx]=true; fx.Enabled=false
+			end
+		end
+	else
+		for fx in pairs(F._fx or {}) do pcall(function() fx.Enabled=true end) end
+		F._fx=nil
+	end
+end
+
+-- tasks ---------------------------------------------------------------------
+local gates = {}
+local function gate(k, sec)
+	local t = now(); if (gates[k] or 0) > t then return false end; gates[k] = t + sec; return true
+end
 
 function F.register_tasks()
-    SD.add_task("auto_sell", 0.1, function()
-        if not SD.config.auto_sell or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("auto_sell", SD.config.auto_sell_delay) then return end
-        F.sell_once()
-    end)
-
-    SD.add_task("auto_dig", 0.1, function()
-        if not SD.config.auto_dig or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("auto_dig", SD.config.auto_dig_delay) then return end
-        F.dig_once()
-    end)
-
-    SD.add_task("auto_collect", 0.1, function()
-        if not SD.config.auto_collect or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("auto_collect", 0.8) then return end
-        F.collect_once()
-    end)
-
-    SD.add_task("auto_upgrade", 0.1, function()
-        if not SD.config.auto_upgrade or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("auto_upgrade", 3.0) then return end
-        F.upgrade_once()
-    end)
-
-    SD.add_task("auto_rebirth", 0.1, function()
-        if not SD.config.auto_rebirth or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("auto_rebirth", 5.0) then return end
-        F.rebirth_once()
-    end)
-
-    SD.add_task("tp_crown", 0.1, function()
-        if not SD.config.tp_crown or SD.state.paused then return end
-        if not SD.alive() then return end
-        if not SD.gate("tp_crown", SD.config.tp_crown_delay) then return end
-        F.goto_crown()
-    end)
-
-    SD.add_task("speed_lock", 0.25, function()
-        local hum = SD.get_hum()
-        if not hum then return end
-        if SD.config.walkspeed_lock and hum.WalkSpeed ~= SD.config.walkspeed then
-            hum.WalkSpeed = SD.config.walkspeed
-        end
-        if SD.config.jumppower_lock then
-            if not hum.UseJumpPower then hum.UseJumpPower = true end
-            if hum.JumpPower ~= SD.config.jumppower then
-                hum.JumpPower = SD.config.jumppower
-            end
-        end
-    end)
-
-    SD.add_task("esp", 0.8, function()
-        F.esp_tick()
-    end)
-
-    SD.add_task("fullbright", 2.0, function()
-        if SD.config.fullbright then F.fullbright_apply() end
-    end)
-
-    SD.add_task("stats", 0.5, function()
-        local cash, name = SD.cash()
-        if cash then
-            if SD.state.last_cash and cash > SD.state.last_cash then
-                SD.state.session_earned = SD.state.session_earned + (cash - SD.state.last_cash)
-            end
-            SD.state.last_cash = cash
-            if SD.gui and SD.gui.set_status then
-                SD.gui.set_status(("%s %s"):format(name or "cash", SD.fmt(cash)))
-            end
-        end
-    end)
+	SD.add_task("sell", 0.2, function()
+		if not SD.config.auto_sell or SD.state.paused or not SD.alive() then F.status.sell = SD.config.auto_sell and "paused" or "off"; return end
+		if gate("sell", tonumber(SD.config.sell_delay) or 1.2) then F.sell_once() end
+	end)
+	SD.add_task("collect", 0.2, function()
+		if not SD.config.auto_collect or SD.state.paused or not SD.alive() then F.status.collect = SD.config.auto_collect and "paused" or "off"; return end
+		if gate("collect", tonumber(SD.config.collect_delay) or 1.0) then F.collect_once() end
+	end)
+	SD.add_task("dig", 0.1, function()
+		if not SD.config.auto_dig or SD.state.paused or not SD.alive() then F.status.dig = SD.config.auto_dig and "paused" or "off"; return end
+		if gate("dig", tonumber(SD.config.dig_delay) or 0.25) then F.dig_once() end
+	end)
+	SD.add_task("crown", 0.15, function()
+		if not SD.config.auto_crown or SD.state.paused or not SD.alive() then F.status.crown = SD.config.auto_crown and "paused" or "off"; return end
+		if gate("crown", tonumber(SD.config.crown_delay) or 0.75) then F.goto_crown() end
+	end)
+	SD.add_task("speed", 0.25, function() F.apply_speed() end)
+	SD.add_task("esp", 0.9, function() F.esp_tick() end)
+	SD.add_task("stats", 0.5, function()
+		local cash, name = SD.cash()
+		if cash then
+			if SD.state.last_cash and cash > SD.state.last_cash then SD.state.session_earned = SD.state.session_earned + (cash - SD.state.last_cash) end
+			SD.state.last_cash = cash
+			if SD.gui and SD.gui.set_status then SD.gui.set_status((name or "cash") .. " " .. SD.fmt(cash)) end
+		end
+	end)
 end
-
--- character lifecycle -----------------------------------------------------
 
 function F.bind_character()
-    SD.state.anchor = nil
-    local ch = SD.get_char()
-    if not ch then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if hum then
-        if SD.config.walkspeed_lock then hum.WalkSpeed = SD.config.walkspeed end
-        if SD.config.jumppower_lock then
-            hum.UseJumpPower = true
-            hum.JumpPower = SD.config.jumppower
-        end
-    end
+	SD.state.anchor = nil
+	task.defer(F.apply_speed)
+	if SD.config.noclip then F.set_noclip(true) end
 end
 
-SD.plr.CharacterAdded:Connect(function()
-    task.wait(0.4)
-    F.bind_character()
-end)
+if LP then LP.CharacterAdded:Connect(function() task.wait(0.4); F.bind_character() end) end
+F.my_plot()
 
-F.anti_afk_enable()
-F.auto_rejoin_enable()
-
-SD.log("features loaded")
+SD.log("features v3 loaded")
 
 --[[
-    file: 40_exploits.lua
-    Discovery + probe kit.
-
-    The game is not readable from outside, so nothing here guesses a remote
-    name. It enumerates, filters, fires, and measures the cash delta. A remote
-    that pays out on a bare FireServer() with no server-side validation is the
-    classic Sell-Dirt-class bug: the client owns the amount.
-
-    Everything in here is manual-trigger. Blind-firing every remote on load is
-    a ban in three seconds, not a cheat.
+    Sell Dirt v3 exploits/discovery (manual, opt-in)
+    Safe by default: no blind firing on load. Scans for cash-gain remotes.
 ]]
 
 local SD = getgenv().SD
 local E = {}
 SD.exploits = E
-
-E.selected = nil
 E.hits = {}
 
--- arg parsing --------------------------------------------------------------
-
-function E.parse_args(str)
-    local out = {}
-    if not str or str == "" then return out end
-    for token in string.gmatch(str, "[^,]+") do
-        token = string.gsub(string.gsub(token, "^%s+", ""), "%s+$", "")
-        if token ~= "" then
-            local num = tonumber(token)
-            if num then
-                out[#out + 1] = num
-            elseif token == "true" then
-                out[#out + 1] = true
-            elseif token == "false" then
-                out[#out + 1] = false
-            else
-                out[#out + 1] = (string.gsub(token, '^"(.*)"$', "%1"))
-            end
-        end
-    end
-    return out
+local function risky_remote(r)
+	if not r then return true end
+	local n = string.lower((r.name or "") .. " " .. (r.path or ""))
+	for _, b in ipairs({ "autosell","auto sell","auto_sell","gamepass","robux","devproduct","marketplace","promptpurchase","buy","purchase","donate","admin","ban","kick","chat","log","analytics","telemetry" }) do
+		if string.find(n, b, 1, true) then return true end
+	end
+	if SD.is_risky and SD.is_risky(r) then return true end
+	return false
 end
 
--- cash delta probe --------------------------------------------------------
-
--- Fire a remote, watch the money stat. Returns gained, amount.
 function E.cash_probe(remote, args, settle)
-    local before = SD.cash()
-    local ok, err = SD.probe_remote(remote, args)
-    if not ok then return false, 0, tostring(err) end
-    task.wait(settle or 0.6)
-    local after = SD.cash()
-    if before and after and after > before then
-        return true, after - before, nil
-    end
-    return false, 0, nil
-end
-
--- Fuzz one remote with a spread of payload shapes. Logs which ones land.
-function E.fuzz(remote)
-    local payloads = {
-        { "empty",        {} },
-        { "zero",         { 0 } },
-        { "negative",     { -1 } },
-        { "one",          { 1 } },
-        { "huge",         { 1e9 } },
-        { "huger",        { 1e12 } },
-        { "string one",   { "1" } },
-        { "string huge",  { "999999999999" } },
-        { "true",         { true } },
-        { "empty string", { "" } },
-        { "table",        { {} } },
-        { "vector",       { Vector3.new(0, 0, 0) } },
-        { "cframe",       { CFrame.new() } },
-    }
-
-    local results = {}
-    for _, entry in ipairs(payloads) do
-        local label, args = entry[1], entry[2]
-        local before = SD.cash()
-        local ok, err = SD.probe_remote(remote, args)
-        task.wait(0.4)
-        local after = SD.cash()
-        local gain = (before and after and after > before) and (after - before) or 0
-        results[#results + 1] = { label = label, ok = ok, err = err, gain = gain }
-        SD.log(("[fuzz] %-14s ok=%s gain=%s %s"):format(
-            label, tostring(ok), SD.fmt(gain), err and tostring(err) or ""
-        ))
-        if gain > 0 then
-            E.hits[#E.hits + 1] = { path = remote.path or tostring(remote), args = label, gain = gain }
-        end
-    end
-    return results
-end
-
--- Auto hunt: fire every grind-keyword remote with a couple of shapes and
--- report the ones that move money.
-function E.auto_hunt()
-    local keywords = {
-        "sell", "cash", "money", "coin", "reward", "claim",
-        "collect", "buy", "upgrade", "dig", "dirt", "deposit",
-    }
-    local list = SD.remotes_matching(keywords)
-    if #list > 40 then
-        local trimmed = {}
-        for i = 1, 40 do trimmed[i] = list[i] end
-        list = trimmed
-    end
-
-    SD.notify(("hunting %d remotes"):format(#list), "info")
-    local found = 0
-
-    for _, r in ipairs(list) do
-        if SD.state.paused then break end
-
-        local before = SD.cash()
-        SD.probe_remote(r, {})
-        task.wait(0.3)
-        local after = SD.cash()
-        if before and after and after > before then
-            found = found + 1
-            E.hits[#E.hits + 1] = { path = r.path, args = "empty", gain = after - before }
-            SD.log(("[hunt] HIT %s  +%s"):format(r.path, SD.fmt(after - before)))
-        else
-            -- second pass: a number argument is the common shape for
-            -- "sell(amount)" style remotes
-            local b2 = SD.cash()
-            SD.probe_remote(r, { 1 })
-            task.wait(0.3)
-            local a2 = SD.cash()
-            if b2 and a2 and a2 > b2 then
-                found = found + 1
-                E.hits[#E.hits + 1] = { path = r.path, args = "1", gain = a2 - b2 }
-                SD.log(("[hunt] HIT %s  +%s (arg=1)"):format(r.path, SD.fmt(a2 - b2)))
-            end
-        end
-    end
-
-    SD.notify(("hunt done: %d hits"):format(found), found > 0 and "ok" or "warn")
-    return E.hits
-end
-
--- client-side primitives --------------------------------------------------
-
--- ProximityPrompt config is replicated from the server, but the *hold* is
--- evaluated client-side in most games. Zeroing HoldDuration and lifting
--- MaxActivationDistance is the cheapest reach exploit there is.
-function E.prompt_spoof()
-    SD.refresh(true)
-    local n = 0
-    for _, p in ipairs(SD.cache.prompts) do
-        local ok = pcall(function()
-            p.HoldDuration = 0
-            p.MaxActivationDistance = math.huge
-            p.RequiresLineOfSight = false
-            p.Enabled = true
-        end)
-        if ok then n = n + 1 end
-    end
-    return n
-end
-
-function E.click_spoof()
-    SD.refresh(true)
-    local n = 0
-    for _, c in ipairs(SD.cache.clicks) do
-        local ok = pcall(function() c.MaxActivationDistance = math.huge end)
-        if ok then n = n + 1 end
-    end
-    return n
-end
-
-E._noclip = false
-
-function E.noclip(on)
-    E._noclip = on and true or false
-    local ch = SD.get_char()
-    if not ch then return end
-    for _, p in ipairs(ch:GetDescendants()) do
-        if p:IsA("BasePart") then
-            pcall(function() p.CanCollide = not E._noclip end)
-        end
-    end
-end
-
-function E.god()
-    local hum = SD.get_hum()
-    if not hum then return false end
-    pcall(function()
-        hum.MaxHealth = math.huge
-        hum.Health = math.huge
-    end)
-    return true
-end
-
-function E.infinite_jump()
-    local hum = SD.get_hum()
-    if not hum then return false end
-    pcall(function()
-        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-    end)
-    return true
-end
-
--- Write a client-side ValueBase. If the server ever reads these back without
--- validating, this is the dupe primitive.
-function E.client_values()
-    local out = {}
-    local plr = SD.plr
-    for _, v in ipairs(plr:GetDescendants()) do
-        if v:IsA("ValueBase") then
-            out[#out + 1] = { obj = v, path = v:GetFullName(), value = v.Value }
-        end
-    end
-    return out
-end
-
-function E.write_value(needle, value)
-    if not needle or needle == "" then return 0 end
-    local n = 0
-    for _, entry in ipairs(E.client_values()) do
-        if SD.match(entry.path, { needle }) then
-            local ok = pcall(function() entry.obj.Value = value end)
-            if ok then n = n + 1 end
-        end
-    end
-    return n
+	local before = SD.cash()
+	local ok, err = SD.probe_remote(remote, args)
+	if not ok then return false, 0, tostring(err) end
+	task.wait(settle or 0.5)
+	local after = SD.cash()
+	if before and after and after > before then return true, after - before, nil end
+	return false, 0, nil
 end
 
 function E.sell_candidates()
-		local out = {}
-		for _, r in ipairs(SD.cache.remotes) do
-			local key = string.lower(r.name .. " " .. r.path)
-			if (string.find(key, "sell", 1, true) or string.find(key, "cash", 1, true) or string.find(key, "deposit", 1, true) or string.find(key, "dirt", 1, true))
-				and not string.find(key, "rebirth", 1, true)
-				and not string.find(key, "prestige", 1, true)
-				and not string.find(key, "admin", 1, true)
-				and not string.find(key, "ban", 1, true) then
-				out[#out + 1] = r
+	local out = {}
+	for _, r in ipairs(SD.cache.remotes or {}) do
+		if not risky_remote(r) then
+			local n = string.lower(r.name or "")
+			if string.find(n, "sell", 1, true) or string.find(n, "cash", 1, true) or string.find(n, "deposit", 1, true) then
+				out[#out+1] = r
 			end
 		end
-		return out
 	end
+	return out
+end
 
-	function E.auto_configure()
-		-- Scan only: do NOT spoof prompts/clicks (spoofing makes fake "tap" prompts appear everywhere)
-		SD.refresh(true)
-		local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
-		local plotName = plot and (plot.Name or "found") or "not detected (script will still try safely)"
+function E.auto_configure()
+	SD.refresh(true)
+	local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
+	local plotName = plot and plot.Name or "auto"
+	local best = nil
+	for _, r in ipairs(E.sell_candidates()) do
+		local n = string.lower(r.name or "")
+		if n == "sell" or n == "selldirt" or n == "sell_dirt" or string.find(n, "sell", 1, true) then best = r; break end
+	end
+	if best and (not SD.config.sell_remote or SD.config.sell_remote == "") then SD.config.sell_remote = best.name end
+	local report = ("Scan done. Plot: %s | Remotes: %d | Prompts: %d | Sell remote: %s"):format(
+		plotName, #(SD.cache.remotes or {}), #(SD.cache.prompts or {}), best and best.name or "auto"
+	)
+	SD.log(report)
+	SD.notify("Scan done. Turn on modules in Farm.", "ok")
+	return report
+end
 
-		-- pick a likely sell remote (name match) without firing it
-		local best = nil
-		for _, r in ipairs(E.sell_candidates()) do
-			local n = string.lower(r.name)
-			if n == "sell" or n == "selldirt" or n == "sell_dirt" or string.find(n, "sell", 1, true) then
-				best = r
+function E.find_exploits()
+	SD.refresh(true)
+	SD.notify("Scanning for cash-gain exploits (manual)...", "info")
+	local found = {}
+	local tried = 0
+
+	local keywords = { "sell","cashout","cash","reward","claim","collect","deposit","redeem","dirt" } -- no "buy"
+	local list = SD.remotes_matching(keywords) or {}
+	local filtered = {}
+	for _, r in ipairs(list) do if not risky_remote(r) then filtered[#filtered+1] = r end end
+	if #filtered > 30 then local t={} for i=1,30 do t[i]=filtered[i] end; filtered=t end
+
+	local probes = { {}, {1}, {true}, {999999}, {"SellAll"} }
+	for _, remote in ipairs(filtered) do
+		if SD.state.paused or tried >= 30 then break end
+		tried = tried + 1
+		for _, args in ipairs(probes) do
+			local gained, amount = E.cash_probe(remote, args, 0.4)
+			if gained and amount > 0 then
+				local hit = { path = remote.path or remote.name, args = SD.HttpService:JSONEncode(args), gain = amount }
+				found[#found+1] = hit; E.hits[#E.hits+1] = hit
+				SD.log(("[exploit] POSSIBLE %s +%s args=%s"):format(hit.path, SD.fmt(amount), hit.args))
 				break
 			end
 		end
-		if best and (not SD.config.sell_remote or SD.config.sell_remote == "") then
-			SD.config.sell_remote = best.name
-		end
-
-		local report = ("Scan done. Plot: %s | Remotes: %d | Prompts: %d | Sell remote: %s"):format(
-			plotName, #SD.cache.remotes, #SD.cache.prompts, best and best.name or "(auto/remote)"
-		)
-		SD.log(report)
-		SD.notify("Scan done. Nothing enabled - turn on what you want in Grind/Move.", "ok")
-		return report
+		task.wait(0.05)
 	end
 
-	function E.find_exploits()
-		SD.refresh(true)
-		SD.notify("Scanning for cash/dupe-style exploits (manual probe)...", "info")
-		local hits = {}
-		local tried = 0
-
-		local function record(remote, args, gain)
-			hits[#hits + 1] = { path = remote.path, args = args, gain = gain }
-			E.hits[#E.hits + 1] = hits[#hits]
-			SD.log(("[exploit] POSSIBLE %s args=%s +%s"):format(remote.path or remote.name, args, SD.fmt(gain)))
-		end
-
-		local keywords = { "sell","cash","money","coin","reward","claim","collect","buy","dirt","deposit","add","give","redeem","pickup" }
-		local list = SD.remotes_matching(keywords)
-		if #list > 35 then
-			local trimmed = {}
-			for i = 1, 35 do trimmed[i] = list[i] end
-			list = trimmed
-		end
-
-		local probes = {
-			{label = "{}", args = {}},
-			{label = "{1}", args = {1}},
-			{label = "{true}", args = {true}},
-			{label = '{999999}', args = {999999}},
-			{label = '{"SellAll"}', args = {"SellAll"}},
-		}
-		for _, remote in ipairs(list) do
-			if SD.state.paused then break end
-			if tried >= 35 then break end
-			tried = tried + 1
-			local hit = false
-			for _, pr in ipairs(probes) do
-				local gained, amount = E.cash_probe(remote, pr.args, 0.4)
-				if gained and amount > 0 then
-					record(remote, pr.label, amount)
-					hit = true
-					break
-				end
-			end
-			if not hit then task.wait(0.05) end
-		end
-
-		-- dupe-style check: double-fire promising sell remotes and compare delta
-		for _, remote in ipairs(E.sell_candidates()) do
-			if tried >= 45 then break end
-			tried = tried + 1
-			local before = SD.cash()
-			pcall(function() SD.probe_remote(remote, {}) end)
-			pcall(function() SD.probe_remote(remote, {}) end)
-			task.wait(0.5)
-			local after = SD.cash()
-			if before and after and after > before then
-				record(remote, "double-fire {}", after - before)
-			end
-			task.wait(0.05)
-		end
-
-		if #hits == 0 then
-			SD.notify(("Scan done: no obvious cash exploit found (%d checks)."):format(tried), "warn")
-			SD.log("No positive cash deltas found. This does not guarantee no dupes/exploits exist.")
-		else
-			SD.notify(("Found %d possible exploit(s)! Check console (F9)."):format(#hits), "ok")
-		end
-		return hits
+	if #found == 0 then
+		SD.notify(("Scan done: no obvious cash exploit found (%d checks)."):format(tried), "warn")
+	else
+		SD.notify(("Found %d possible exploit(s). Check console (F9)."):format(#found), "ok")
 	end
+	return found
+end
 
-	-- GUI ---------------------------------------------------------------------
-
-function E.build_gui(parent, gui)
-		local T = gui.theme
-
-		local easy = gui.section(parent, "Easy (recommended)")
-		gui.label(easy, "Use these first. They auto-detect your plot and try safe setup steps.", 16, T.muted).TextSize = 11
-
-		local status = gui.label(easy, "Status: not scanned yet", 16, T.text)
-		status.TextSize = 11
-		status.TextWrapped = true
-		status.AutomaticSize = Enum.AutomaticSize.Y
-
-		local function refresh_status(extra)
-			local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
-			local plotName = plot and plot.Name or "auto (not detected)"
-			local msg = ("Plot: %s | Remotes: %d | Prompts: %d"):format(plotName, #SD.cache.remotes, #SD.cache.prompts)
-			if extra and extra ~= "" then msg = msg .. "\n" .. extra end
-			status.Text = msg
-		end
-
-		gui.button(easy, {
-			text = "Auto-Configure (do this first)",
-			color = T.accent,
-			callback = function()
-				local report = E.auto_configure()
-				refresh_status("Ready. Enable Auto Sell / Auto Dig in Grind.")
-			end,
-		})
-
-		gui.button(easy, {
-			text = "Find Cash / Dupe Exploits (scan)",
-			callback = function()
-				SD.notify("Scanning... results appear as notifications and in console (F9).", "info")
-				task.spawn(function()
-					local hits = E.find_exploits()
-					refresh_status(("Scan done: %d possible exploit(s) found."):format(#hits))
-				end)
-			end,
-		})
-
-		gui.button(easy, {
-			text = "Try Sell Remotes Now",
-			callback = function()
-				local n = SD.features and SD.features.fire_sell_remotes and SD.features.fire_sell_remotes() or 0
-				SD.notify(("Fired %d sell-like remotes"):format(n), n > 0 and "ok" or "warn")
-			end,
-		})
-
-		gui.button(easy, {
-			text = "Show Exploit Results (console)",
-			callback = function()
-				if #E.hits == 0 then SD.notify("No results yet. Run a scan first.", "warn") return end
-				for _, h in ipairs(E.hits) do
-					SD.log(("[hit] %s | args=%s | +%s"):format(h.path, h.args, SD.fmt(h.gain)))
-				end
-				SD.notify(("%d result(s) printed to console"):format(#E.hits), "ok")
-			end,
-		})
-
-		-- Advanced (kept for power users, but not the main flow)
-		local adv = gui.section(parent, "Advanced (optional)")
-		gui.label(adv, "Only use if Easy mode doesn't find what you need. Manual probing can be risky.", 16, T.muted).TextSize = 11
-
-		gui.button(adv, {
-			text = "Dump recon to console",
-			callback = function() SD.dump(); SD.notify("Recon dumped (F9 console)", "ok") end,
-		})
-
-		gui.button(adv, {
-			text = "Legacy auto-hunt (cash probe)",
-			callback = function() task.spawn(E.auto_hunt) end,
-		})
-
-		gui.button(adv, {
-			text = "Prompt spoof (reach/hold) - CAN SHOW FAKE TAP BUTTONS",
-			callback = function() SD.notify(("%d prompts patched (may show fake taps)"):format(E.prompt_spoof()), "warn") end,
-		})
-
-		gui.button(adv, {
-			text = "Click detector reach (advanced)",
-			callback = function() SD.notify(("%d detectors patched"):format(E.click_spoof()), "warn") end,
-		})
-
-		gui.button(adv, {
-			text = "List client values (console)",
-			callback = function()
-				local list = E.client_values()
-				for _, v in ipairs(list) do SD.log(("  %s = %s"):format(v.path, tostring(v.value))) end
-				SD.notify(("%d values logged"):format(#list), "ok")
-			end,
-		})
-
-		local val_name = gui.textbox(adv, { text = "value name", default = "", placeholder = "Cash" })
-		local val_val = gui.textbox(adv, { text = "set to", default = "", placeholder = "1000000" })
-		gui.button(adv, {
-			text = "Write matching client values (may be visual only)",
-			callback = function()
-				local v = tonumber(val_val.get())
-				if not v then SD.notify("Enter a number", "warn") return end
-				local n = E.write_value(val_name.get(), v)
-				SD.notify(("%d value(s) written"):format(n), n > 0 and "ok" or "warn")
-			end,
-		})
-
-		gui.button(adv, {
-			text = "Server hop",
-			callback = function() SD.features.server_hop() end,
-		})
-
-		task.defer(function()
-			SD.refresh(true)
-			refresh_status()
-		end)
-
-		local function populate() refresh_status() end
-		return populate
-	end
-
-SD.log("exploits loaded")
+SD.log("exploits v3 loaded")
 
 --[[
-    file: 50_boot.lua
-    Assembles the tabs, wires config <-> GUI, starts the scheduler.
+    Sell Dirt v3 boot — clean, simple GUI. All modules are on/off switches.
+    Nothing enabled by default.
 ]]
 
 local SD = getgenv().SD
 local gui = SD.gui
+local F = SD.features
 local T = gui.theme
 
 SD.load_config()
-
 gui.build()
-local win = gui.window
 
--- silent persist, debounced ------------------------------------------------
-
-local save_pending = false
+local savePending = false
 local function persist()
-    if not (SD.caps.writefile and SD.caps.makefolder) then return end
-    pcall(function() makefolder("SellDirt") end)
-    local ok, json = pcall(function() return SD.HttpService:JSONEncode(SD.config) end)
-    if ok then pcall(function() writefile(SD.CONFIG_FILE, json) end) end
+	if savePending then return end
+	savePending = true
+	task.delay(1.5, function()
+		savePending = false
+		if SD.caps.writefile and SD.caps.makefolder then
+			pcall(function() makefolder("SellDirt") end)
+			local ok, json = pcall(function() return SD.HttpService:JSONEncode(SD.config) end)
+			if ok then pcall(function() writefile(SD.CONFIG_FILE, json) end) end
+		end
+	end)
 end
-
-local function mark_dirty()
-    if save_pending then return end
-    save_pending = true
-    task.delay(2, function()
-        save_pending = false
-        persist()
-    end)
-end
-
 local function bind(key)
-    return function(v)
-        SD.config[key] = v
-        mark_dirty()
-    end
+	return function(v) SD.config[key] = v; persist() end
+end
+local function bindNum(key)
+	return function(v) SD.config[key] = tonumber(v) or SD.config[key]; persist() end
 end
 
--- GRIND --------------------------------------------------------------------
+-- FARM TAB ------------------------------------------------------------------
+local farm = gui.tab("Farm")
 
-local grind = gui.tab("Grind")
+local main = gui.section(farm, "Modules (on/off)")
+gui.label(main, "Everything is OFF by default. Turn on what you want. Safe: no Robux/gamepass actions, your plot only.", 16, T.muted).TextSize = 11
 
-local auto = gui.section(grind, "Main (turn on what you want)")
-gui.label(auto, "Nothing is enabled by default. Auto Sell uses remotes (no teleport) and only your plot.", 16, T.muted).TextSize = 11
-gui.button(auto, {
-	text = "Scan Game / Detect Plot",
-	callback = function() pcall(function() SD.exploits.auto_configure() end) end,
-})
+gui.toggle(main, { text = "Auto Sell (works from anywhere)", default = SD.config.auto_sell, callback = bind("auto_sell") })
+gui.toggle(main, { text = "Auto Collect (pickups/board, skips extractor)", default = SD.config.auto_collect, callback = bind("auto_collect") })
+gui.toggle(main, { text = "Auto Dig", default = SD.config.auto_dig, callback = bind("auto_dig") })
+gui.toggle(main, { text = "Auto Crown (TP only when a real crown event is active)", default = SD.config.auto_crown, callback = bind("auto_crown") })
 
-gui.toggle(auto, {
-    text = "Auto Sell (works from anywhere, safe, no robux)",
-    default = SD.config.auto_sell,
-    callback = bind("auto_sell"),
-})
+local speedSec = gui.section(farm, "Speed")
+gui.slider(speedSec, { text = "Sell delay", min = 0.5, max = 10, decimals = 1, suffix = "s", default = SD.config.sell_delay, callback = bindNum("sell_delay") })
+gui.slider(speedSec, { text = "Collect delay", min = 0.3, max = 10, decimals = 1, suffix = "s", default = SD.config.collect_delay, callback = bindNum("collect_delay") })
+gui.slider(speedSec, { text = "Dig delay", min = 0.05, max = 2, decimals = 2, suffix = "s", default = SD.config.dig_delay, callback = bindNum("dig_delay") })
+gui.slider(speedSec, { text = "Crown check", min = 0.3, max = 5, decimals = 1, suffix = "s", default = SD.config.crown_delay, callback = bindNum("crown_delay") })
 
-gui.toggle(auto, {
-    text = "Auto Dig",
-    default = SD.config.auto_dig,
-    callback = bind("auto_dig"),
-})
+local actions = gui.section(farm, "Quick actions")
+gui.button(actions, { text = "Sell Now", callback = function() local ok = F.sell_once(); SD.notify(ok and "Sell triggered" or ("Sell not found: " .. tostring(F.status.sell)), ok and "ok" or "warn") end })
+gui.button(actions, { text = "Collect Now", callback = function() local n = F.collect_once(); SD.notify("Collected " .. tostring(n) .. " prompt(s)", n > 0 and "ok" or "warn") end })
+gui.button(actions, { text = "TP to Crown Now (only if active)", callback = function() local ok = F.goto_crown(); SD.notify(ok and "Teleported to crown" or "No active crown event right now", ok and "ok" or "warn") end })
+gui.button(actions, { text = "Scan Game / Detect Plot", callback = function() pcall(function() SD.exploits.auto_configure() end) end })
 
-gui.toggle(auto, {
-    text = "Auto Collect board/pickups (my plot, works from anywhere)",
-    default = SD.config.auto_collect,
-    callback = bind("auto_collect"),
-})
+-- PLAYER TAB ----------------------------------------------------------------
+local player = gui.tab("Player")
 
-gui.toggle(auto, {
-    text = "Auto Upgrade (in-game only, can spend game cash)",
-    default = SD.config.auto_upgrade,
-    callback = bind("auto_upgrade"),
-})
+local move = gui.section(player, "Movement")
+gui.toggle(move, { text = "Lock WalkSpeed", default = SD.config.speed_lock, callback = function(v) SD.config.speed_lock = v; persist(); F.apply_speed() end })
+gui.slider(move, { text = "WalkSpeed", min = 16, max = 300, decimals = 0, default = SD.config.walkspeed, callback = function(v) SD.config.walkspeed = v; persist(); F.apply_speed() end })
+gui.toggle(move, { text = "Lock JumpPower", default = SD.config.jump_lock, callback = function(v) SD.config.jump_lock = v; persist(); F.apply_speed() end })
+gui.slider(move, { text = "JumpPower", min = 50, max = 300, decimals = 0, default = SD.config.jumppower, callback = function(v) SD.config.jumppower = v; persist(); F.apply_speed() end })
+gui.toggle(move, { text = "Noclip", default = SD.config.noclip, callback = function(v) F.set_noclip(v); persist() end })
 
-gui.toggle(auto, {
-    text = "Auto Rebirth/Prestige (DANGEROUS: resets progress)",
-    default = SD.config.auto_rebirth,
-    callback = bind("auto_rebirth"),
-})
+local vis = gui.section(player, "Visual")
+gui.toggle(vis, { text = "ESP Crown (active event only)", default = SD.config.esp_crown, callback = bind("esp_crown") })
+gui.toggle(vis, { text = "ESP Players", default = SD.config.esp_players, callback = bind("esp_players") })
+gui.toggle(vis, { text = "Fullbright", default = SD.config.fullbright, callback = function(v) SD.config.fullbright = v; F.fullbright(v); persist() end })
+gui.toggle(vis, { text = "FPS Boost", default = SD.config.fps_boost, callback = function(v) SD.config.fps_boost = v; F.fps_boost(v); persist() end })
 
-gui.slider(auto, {
-    text = "Sell speed",
-    min = 0.8, max = 12, decimals = 1, suffix = "s",
-    default = SD.config.auto_sell_delay,
-    callback = bind("auto_sell_delay"),
-})
+-- SETTINGS TAB --------------------------------------------------------------
+local settings = gui.tab("Settings")
 
-gui.slider(auto, {
-    text = "Dig speed",
-    min = 0.05, max = 2, decimals = 2, suffix = "s",
-    default = SD.config.auto_dig_delay,
-    callback = bind("auto_dig_delay"),
-})
+local util = gui.section(settings, "Utility")
+gui.toggle(util, { text = "Anti-AFK", default = SD.config.anti_afk, callback = bind("anti_afk") })
+gui.toggle(util, { text = "Auto Rejoin on disconnect", default = SD.config.auto_rejoin, callback = bind("auto_rejoin") })
+gui.toggle(util, { text = "Pause all modules", default = false, callback = function(v) SD.state.paused = v; SD.notify(v and "Paused" or "Resumed", v and "warn" or "ok") end })
 
-gui.button(auto, {
-    text = "Sell Now",
-    callback = function()
-        local ok = SD.features.sell_once()
-        SD.notify(ok and "Sell triggered" or "Couldn't sell yet (try Auto-Setup / Sell remote in Setup)", ok and "ok" or "warn")
-    end,
-})
+local statusLabel = gui.label(util, "Status: ready", 16, T.muted)
+statusLabel.TextSize = 11
+statusLabel.TextWrapped = true
+statusLabel.AutomaticSize = Enum.AutomaticSize.Y
 
-local adv = gui.section(grind, "Advanced (usually not needed)")
-gui.toggle(adv, {
-    text = "Teleport to sell zone (OFF recommended - can bug/TP wrong)",
-    default = SD.config.auto_sell_teleport,
-    callback = bind("auto_sell_teleport"),
-})
+local setup = gui.section(settings, "Setup (only if auto-detect misses)")
+gui.toggle(setup, { text = "Only use MY plot (recommended)", default = SD.config.only_my_plot, callback = bind("only_my_plot") })
+gui.textbox(setup, { text = "Sell remote", default = SD.config.sell_remote, placeholder = "auto", callback = function(v) SD.config.sell_remote = v; persist() end })
+gui.textbox(setup, { text = "Sell object", default = SD.config.sell_object, placeholder = "auto", callback = function(v) SD.config.sell_object = v; persist() end })
+gui.textbox(setup, { text = "Crown object", default = SD.config.crown_object, placeholder = "Crown", callback = function(v) SD.config.crown_object = v; persist() end })
+gui.textbox(setup, { text = "Dig tool", default = SD.config.dig_tool, placeholder = "Shovel", callback = function(v) SD.config.dig_tool = v; persist() end })
 
-gui.toggle(adv, {
-    text = "Return after sell teleport",
-    default = SD.config.sell_return,
-    callback = bind("sell_return"),
-})
+local cfg = gui.section(settings, "Config")
+gui.button(cfg, { text = "Save config", callback = function() SD.save_config() end })
+gui.button(cfg, { text = "Unload", color = Color3.fromRGB(60, 26, 34), text_color = T.danger, callback = function() SD.unload() end })
 
-gui.dropdown(adv, {
-    text = "Dig method",
-    options = { "both", "tool", "click" },
-    default = SD.config.dig_mode,
-    callback = bind("dig_mode"),
-})
+local expl = gui.section(settings, "Exploit scan (manual, optional)")
+gui.label(expl, "Scans remotes for cash-gain bugs. Results in console (F9). May be risky in some games.", 16, T.muted).TextSize = 11
+gui.button(expl, { text = "Run Exploit Scan", callback = function() task.spawn(function() if SD.exploits and SD.exploits.find_exploits then SD.exploits.find_exploits() else SD.notify("Exploit module unavailable", "warn") end end) end })
 
-local targets = gui.section(grind, "Setup (only if auto-detect misses)")
-gui.toggle(targets, {
-    text = "Only use MY plot (recommended)",
-    default = SD.config.only_my_plot,
-    callback = bind("only_my_plot"),
-})
+-- RUNTIME -------------------------------------------------------------------
+F.register_tasks()
 
-gui.textbox(targets, {
-    text = "Sell remote name",
-    default = SD.config.sell_remote,
-    placeholder = "auto-detected",
-    callback = bind("sell_remote"),
-})
+local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
 
-gui.textbox(targets, {
-    text = "Sell object name",
-    default = SD.config.sell_name,
-    placeholder = "leave blank",
-    callback = bind("sell_name"),
-})
+SD.add_task("ui_status", 1.0, function()
+	local up = os.time() - SD.state.session_start
+	pcall(F.my_plot)
+	local s = F.status or {}
+	statusLabel.Text = ("Up %s | earned +%s | plot %s\nSell: %s | Collect: %s | Dig: %s | Crown: %s"):format(
+		SD.clock_str(up), SD.fmt(SD.state.session_earned), tostring(s.plot or "?"),
+		tostring(s.sell or "off"), tostring(s.collect or "off"), tostring(s.dig or "off"), tostring(s.crown or "off")
+	)
+end)
 
-gui.textbox(targets, {
-    text = "Crown name (only if auto-detect misses)",
-    default = SD.config.crown_name,
-    placeholder = "Crown",
-    callback = bind("crown_name"),
-})
-
-gui.textbox(targets, {
-    text = "Dig tool name",
-    default = SD.config.dig_tool_name,
-    placeholder = "Shovel",
-    callback = bind("dig_tool_name"),
-})
-
--- MOVEMENT -----------------------------------------------------------------
-
-local move = gui.tab("Move")
-
-local tps = gui.section(move, "Crown (automatic)")
-gui.label(tps, "Auto TP only moves when a real crown/event object is active.", 16, T.muted).TextSize = 11
-
-gui.toggle(tps, {
-    text = "Auto TP to Crown (only during active crown event)",
-    default = SD.config.tp_crown,
-    callback = bind("tp_crown"),
-})
-
-gui.slider(tps, {
-    text = "Crown check speed",
-    min = 0.5, max = 15, decimals = 1, suffix = "s",
-    default = SD.config.tp_crown_delay,
-    callback = bind("tp_crown_delay"),
-})
-
-gui.button(tps, {
-    text = "TP to Crown Now (if active)",
-    callback = function()
-        local ok = SD.features.goto_crown({ require_active = true })
-        if ok then
-            SD.notify("Moved to active crown", "ok")
-        else
-            SD.notify("No active crown/event right now", "warn")
-        end
-    end,
-})
-
-local misc_tp = gui.section(move, "Other teleports")
-
-gui.button(misc_tp, {
-    text = "TP to sell zone (my plot)",
-    callback = function()
-        if SD.features.goto_sell() then
-            SD.notify("moved to sell zone", "ok")
-        else
-            SD.notify("sell zone not found (Auto Sell remote mode doesn't need this)", "warn")
-        end
-    end,
-})
-
-gui.button(tps, {
-    text = "TP to nearest dirt",
-    callback = function()
-        if SD.features.goto_dirt() then
-            SD.notify("moved to dirt", "ok")
-        else
-            SD.notify("no dirt found", "warn")
-        end
-    end,
-})
-
-gui.button(tps, {
-    text = "Set anchor here",
-    callback = function()
-        local hrp = SD.get_hrp()
-        if hrp then
-            SD.state.anchor = hrp.CFrame
-            SD.notify("anchor set", "ok")
-        end
-    end,
-})
-
-gui.button(tps, {
-    text = "Return to anchor",
-    callback = function()
-        if SD.state.anchor then
-            SD.features.return_home()
-            SD.notify("returned", "ok")
-        else
-            SD.notify("no anchor set", "warn")
-        end
-    end,
-})
-
-local speed = gui.section(move, "Speed")
-
-gui.slider(speed, {
-    text = "WalkSpeed",
-    min = 16, max = 500, decimals = 0,
-    default = SD.config.walkspeed,
-    callback = function(v)
-        SD.config.walkspeed = v
-        if SD.config.walkspeed_lock then SD.set_walkspeed(v) end
-        mark_dirty()
-    end,
-})
-
-gui.toggle(speed, {
-    text = "Lock WalkSpeed",
-    default = SD.config.walkspeed_lock,
-    callback = function(v)
-        SD.config.walkspeed_lock = v
-        if v then SD.set_walkspeed(SD.config.walkspeed) end
-        mark_dirty()
-    end,
-})
-
-gui.slider(speed, {
-    text = "JumpPower",
-    min = 50, max = 500, decimals = 0,
-    default = SD.config.jumppower,
-    callback = function(v)
-        SD.config.jumppower = v
-        if SD.config.jumppower_lock then SD.set_jumppower(v) end
-        mark_dirty()
-    end,
-})
-
-gui.toggle(speed, {
-    text = "Lock JumpPower",
-    default = SD.config.jumppower_lock,
-    callback = function(v)
-        SD.config.jumppower_lock = v
-        if v then SD.set_jumppower(SD.config.jumppower) end
-        mark_dirty()
-    end,
-})
-
-local cheats = gui.section(move, "Client movement helpers")
-
-gui.toggle(cheats, {
-    text = "Noclip (client; may not bypass all anti-cheat)",
-    default = false,
-    callback = function(v)
-        SD.exploits.noclip(v)
-        if v then
-            SD.add_task("noclip", 0.2, function()
-                if not SD.exploits._noclip then return end
-                local ch = SD.get_char()
-                if not ch then return end
-                for _, p in ipairs(ch:GetDescendants()) do
-                    if p:IsA("BasePart") then p.CanCollide = false end
-                end
-            end)
-        end
-    end,
-})
-
-gui.button(cheats, {
-    text = "Enable infinite jump (client)",
-    callback = function()
-        SD.exploits.infinite_jump()
-        SD.notify("infinite jump enabled", "ok")
-    end,
-})
-
--- VISUALS ------------------------------------------------------------------
-
-local vis = gui.tab("Visual")
-local esp = gui.section(vis, "ESP")
-
-gui.toggle(esp, {
-    text = "Highlight crown",
-    default = SD.config.esp_crown,
-    callback = bind("esp_crown"),
-})
-
-gui.toggle(esp, {
-    text = "Highlight sell zone",
-    default = SD.config.esp_sell,
-    callback = bind("esp_sell"),
-})
-
-gui.toggle(esp, {
-    text = "Highlight dirt",
-    default = SD.config.esp_dirt,
-    callback = bind("esp_dirt"),
-})
-
-gui.toggle(esp, {
-    text = "Highlight players",
-    default = SD.config.esp_players,
-    callback = bind("esp_players"),
-})
-
-local render = gui.section(vis, "Render")
-
-gui.toggle(render, {
-    text = "Fullbright",
-    default = SD.config.fullbright,
-    callback = function(v)
-        SD.config.fullbright = v
-        if v then SD.features.fullbright_apply() else SD.features.fullbright_restore() end
-        mark_dirty()
-    end,
-})
-
-gui.toggle(render, {
-    text = "FPS boost (kill post FX)",
-    default = SD.config.fps_boost,
-    callback = function(v)
-        SD.config.fps_boost = v
-        if v then SD.features.fps_boost_apply() else SD.features.fps_boost_restore() end
-        mark_dirty()
-    end,
-})
-
--- EXPLOITS -----------------------------------------------------------------
-
-local exp = gui.tab("Exploit")
-local populate_remotes = SD.exploits.build_gui(exp, gui)
-
--- CONFIG -------------------------------------------------------------------
-
-local cfg = gui.tab("Config")
-
-local misc = gui.section(cfg, "Session")
-
-gui.toggle(misc, {
-    text = "Anti-AFK",
-    default = SD.config.anti_afk,
-    callback = bind("anti_afk"),
-})
-
-gui.toggle(misc, {
-    text = "Auto rejoin on disconnect",
-    default = SD.config.auto_rejoin,
-    callback = bind("auto_rejoin"),
-})
-
-gui.toggle(misc, {
-    text = "Queue script on teleport/hop (needs hosted loadstring URL)",
-    default = SD.config.queue_on_teleport,
-    callback = bind("queue_on_teleport"),
-})
-
-gui.toggle(misc, {
-    text = "Pause all automation",
-    default = false,
-    callback = function(v)
-        SD.state.paused = v
-        SD.notify(v and "automation paused" or "automation resumed", v and "warn" or "ok")
-    end,
-})
-
-local info = gui.label(misc, "uptime 0s", 16, T.muted)
-info.TextSize = 11
-
-local store = gui.section(cfg, "Config file")
-
-gui.button(store, {
-    text = "Save config",
-    callback = function()
-        SD.save_config()
-    end,
-})
-
-gui.button(store, {
-    text = "Reload config",
-    callback = function()
-        if SD.load_config() then
-            SD.notify("config loaded - reopen the UI to see values", "ok")
-        else
-            SD.notify("no config file", "warn")
-        end
-    end,
-})
-
-gui.button(store, {
-    text = "Unload script",
-    color = Color3.fromRGB(60, 26, 34),
-    text_color = T.danger,
-    callback = function()
-        SD.unload()
-    end,
-})
-
--- runtime ------------------------------------------------------------------
-
-SD.features.register_tasks()
-
-	SD.add_task("uptime", 1.0, function()
-	    local up = os.time() - SD.state.session_start
-	    local plot = SD.features and SD.features.my_plot and SD.features.my_plot()
-	    local plotTxt = plot and (" | plot: " .. tostring(plot.Name)) or ""
-	    info.Text = ("uptime %s   session +%s%s"):format(
-	        SD.clock_str(up), SD.fmt(SD.state.session_earned), plotTxt
-	    )
+-- anti-afk / auto-rejoin
+if SD.plr then
+	SD.plr.Idled:Connect(function()
+		if not SD.config.anti_afk then return end
+		local vu = SD.VirtualUser
+		if vu then pcall(function() vu:CaptureController(); vu:ClickButton2(Vector2.new()) end) end
 	end)
-
-	local heartbeat = SD.RunService.Heartbeat:Connect(SD.run_tasks)
-
-	function SD.unload()
-	    if heartbeat then heartbeat:Disconnect() end
-	    SD.features.fullbright_restore()
-	    SD.features.fps_boost_restore()
-	    SD.exploits.noclip(false)
-	    for _, bucket in pairs(SD.features.esp_store) do
-	        for _, h in pairs(bucket) do
-	            if h then pcall(function() h:Destroy() end) end
-	        end
-	    end
-	    if SD.gui.root then SD.gui.root:Destroy() end
-	    getgenv().SD = nil
-	    print("[SD] unloaded")
+	local cg = SD.safe(function() return game:GetService("CoreGui") end)
+	local overlay = cg and cg:FindFirstChild("RobloxPromptGui") and cg.RobloxPromptGui:FindFirstChild("promptOverlay")
+	if overlay then
+		overlay.ChildAdded:Connect(function(child)
+			if not SD.config.auto_rejoin or SD.state.rejoin_guard then return end
+			if child.Name == "ErrorPrompt" then
+				SD.state.rejoin_guard = true
+				task.delay(1.5, function()
+					pcall(function() SD.TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, SD.plr) end)
+				end)
+			end
+		end)
 	end
+end
 
-	SD.features.bind_character()
-	task.spawn(function()
-		SD.refresh(true)
-	end)
+function SD.unload()
+	if heartbeat then heartbeat:Disconnect() end
+	F.set_noclip(false)
+	F.fullbright(false); F.fps_boost(false)
+	for _, bucket in pairs(F.esp or {}) do for _, h in pairs(bucket) do pcall(function() h:Destroy() end) end end
+	if SD.gui and SD.gui.root then SD.gui.root:Destroy() end
+	getgenv().SD = nil
+	print("[SD] unloaded")
+end
 
-	SD.notify("Loaded (v" .. SD.version .. "). Nothing is enabled - turn on what you want.", "ok")
-	SD.log("booted. Nothing enabled by default. Use Grind/Move tabs to enable features.")
+F.bind_character()
+task.spawn(function() SD.refresh(true); pcall(F.my_plot) end)
+
+SD.notify("Sell Dirt v" .. SD.version .. " loaded. All modules OFF — enable what you want in Farm.", "ok")
+SD.log("v3 ready")
 
