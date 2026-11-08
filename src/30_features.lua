@@ -390,7 +390,9 @@ local REBIRTH_NAMES = { "rebirth", "prestige", "ascend", "ascension" }
 local function safe_plot_prompt(p, names)
 	if not p or not F.is_mine(p) or F.is_risky(p) then return false end
 	local txt = lower((p.Name or "") .. " " .. (p.ActionText or "") .. " " .. (p.ObjectText or "") .. " " .. (p.Parent and p.Parent.Name or ""))
-	if hasAny(txt, { "robux","gamepass","devproduct","buy","purchase","donate" }) then return false end
+	-- block real-money/monetization; allow in-game "buy upgrade" buttons (no robux indicators)
+	if hasAny(txt, { "robux","gamepass","devproduct","donate","promptpurchase","marketplace" }) then return false end
+	if has(txt, "buy") and (has(txt, "robux") or has(txt, "pass") or has(txt, "gamepass")) then return false end
 	return hasAny(txt, names)
 end
 

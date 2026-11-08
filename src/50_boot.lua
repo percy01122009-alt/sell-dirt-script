@@ -57,8 +57,12 @@ gui.button(actions, { text = "TP to Crown Now (only if active)", callback = func
 gui.button(actions, { text = "Buy Upgrades Now (safe, my plot)", callback = function() local n = F.buy_upgrades_once(); SD.notify("Upgrade prompts triggered: " .. tostring(n), n > 0 and "ok" or "warn") end })
 gui.button(actions, { text = "Scan Game / Detect Plot", callback = function() pcall(function() SD.exploits.auto_configure() end) end })
 
--- PLAYER TAB ----------------------------------------------------------------
-local player = gui.tab("Player")
+-- CROWN / PLAYER TAB --------------------------------------------------------
+local player = gui.tab("Crown/Player")
+
+local crownSec = gui.section(player, "Crown")
+gui.label(crownSec, "Auto Crown module is in Farm. It only TPs when a real active crown event object exists.", 16, T.muted).TextSize = 11
+gui.button(crownSec, { text = "TP to Crown Now (if active)", callback = function() local ok = F.goto_crown(); SD.notify(ok and "Teleported to crown" or "No active crown event right now", ok and "ok" or "warn") end })
 
 local move = gui.section(player, "Movement")
 gui.toggle(move, { text = "Lock WalkSpeed", default = SD.config.speed_lock, callback = function(v) SD.config.speed_lock = v; persist(); F.apply_speed() end })
