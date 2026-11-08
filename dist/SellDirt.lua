@@ -1760,17 +1760,37 @@ function F.sell_target()
 
 local crown_memo, crown_memo_at = nil, 0
 
+	local function crown_path_excluded(inst)
+		local ok, path = pcall(function() return inst:GetFullName() end)
+		if not ok or not path then return false end
+		local p = string.lower(path)
+		local bad = { "feedback", "report", "suggest", "complaint", "donate", "shop", "settings", "menu", "gui", "screen", "interface", "leaderboarddisplay", "statue", "decoration", "spawnlocation" }
+		for _, b in ipairs(bad) do
+			if string.find(p, b, 1, true) then return true end
+		end
+		-- never target crowns held by players
+		local players = SD.Players
+		if players then
+			for _, plr in ipairs(players:GetPlayers()) do
+				local ch = plr.Character
+				if ch then
+					local okD, isD = pcall(function() return inst:IsDescendantOf(ch) end)
+					if okD and isD then return true end
+				end
+			end
+		end
+		return false
+	end
+
 	local function crown_is_active(inst)
 		if not inst or not inst.Parent then return false end
-		-- must be in the live world, not a stored template
-		local okW, inWorld = pcall(function()
-			return inst:IsDescendantOf(workspace)
-		end)
+		local okW, inWorld = pcall(function() return inst:IsDescendantOf(workspace) end)
 		if not okW or not inWorld then return false end
+		if crown_path_excluded(inst) then return false end
 
 		local function part_visible(p)
 			if not p or not p:IsA("BasePart") then return false end
-			if p.Transparency >= 0.98 then return false end
+			if p.Transparency >= 0.995 then return false end
 			local okSize, sz = pcall(function() return p.Size end)
 			if okSize and sz and sz.Magnitude < 0.05 then return false end
 			return true
@@ -1781,66 +1801,78 @@ local crown_memo, crown_memo_at = nil, 0
 		elseif inst:IsA("Model") then
 			if inst.PrimaryPart and part_visible(inst.PrimaryPart) then return true end
 			for _, d in ipairs(inst:GetDescendants()) do
-				if part_visible(d) then return true end
+				if d:IsA("BasePart") and part_visible(d) then return true end
 			end
 			return false
+		elseif inst:IsA("Tool") or inst:IsA("Accessory") then
+			for _, d in ipairs(inst:GetDescendants()) do
+				if d:IsA("BasePart") and part_visible(d) then return true end
+			end
+			-- a tool/accessory in workspace can be a pickup crown
+			return inst.Parent == workspace or (inst.Parent and inst.Parent.Parent == workspace)
 		end
 
 		local p = SD.resolve_part(inst)
 		return part_visible(p)
 	end
 
+	local function strong_crown_name(inst)
+		if not inst then return false end
+		local n = string.lower(tostring(inst.Name or ""))
+		if n == "crown" or n == "thecrown" or n == "eventcrown" or n == "crownpickup" or n == "kingcrown" then return true end
+		-- allow "Crown" as a clear token in short names, avoid random matches
+		if string.find(n, "crown", 1, true) and #n <= 24 and not string.find(n, "feedback", 1, true) and not string.find(n, "report", 1, true) then
+			return true
+		end
+		return false
+	end
+
 	function F.crown_target(opts)
 		opts = opts or {}
-		local require_active = opts.require_active
-		if require_active == nil then require_active = SD.config.tp_crown_only_active end
+		-- Always require an active, real crown for auto behavior (safety: never TP to random objects)
+		local require_active = true
 
-		if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 2 then
-			if (not require_active) or crown_is_active(crown_memo) then
-				return crown_memo
-			end
+		if crown_memo and crown_memo.Parent and (os.clock() - crown_memo_at) < 1.5 then
+			if crown_is_active(crown_memo) then return crown_memo end
 			crown_memo = nil
 		end
 
-		local candidates = {}
-
 		local custom = SD.config.crown_name
 		if custom and custom ~= "" then
+			local candidates = {}
 			for _, p in ipairs(SD.find_parts({ custom })) do candidates[#candidates + 1] = p end
 			for _, m in ipairs(SD.find_models({ custom })) do candidates[#candidates + 1] = m end
-		end
-
-		for _, p in ipairs(SD.find_parts(CROWN_PATTERNS)) do candidates[#candidates + 1] = p end
-		for _, m in ipairs(SD.find_models(CROWN_PATTERNS)) do candidates[#candidates + 1] = m end
-
-		-- last resort: billboard text saying crown (gated)
-		if #candidates == 0 and SD.gate("crown_billboard_scan", 8) then
-			SD.refresh()
-			for _, p in ipairs(SD.cache.parts) do
-				local bb = p:FindFirstChildWhichIsA("BillboardGui", true)
-				if bb then
-					for _, d in ipairs(bb:GetDescendants()) do
-						if d:IsA("TextLabel") and SD.match(d.Text, CROWN_PATTERNS) then
-							candidates[#candidates + 1] = p
-							break
-						end
-					end
+			for _, c in ipairs(candidates) do
+				if crown_is_active(c) then
+					crown_memo, crown_memo_at = c, os.clock()
+					return c
 				end
-				if #candidates > 0 then break end
+			end
+			return nil
+		end
+
+		-- Auto-detect: ONLY strong crown-named objects in workspace (no billboard text scan, no loose matches)
+		local candidates = {}
+		SD.refresh()
+		for _, m in ipairs(SD.cache.models) do
+			if strong_crown_name(m) and crown_is_active(m) then candidates[#candidates + 1] = m end
+		end
+		for _, p in ipairs(SD.cache.parts) do
+			if strong_crown_name(p) and crown_is_active(p) then candidates[#candidates + 1] = p end
+		end
+
+		-- if nothing found, try a very narrow scan of direct workspace children
+		if #candidates == 0 then
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if strong_crown_name(d) and crown_is_active(d) then
+					candidates[#candidates + 1] = d
+					break
+				end
 			end
 		end
 
-		local found = nil
-		for _, c in ipairs(candidates) do
-			if (not require_active) or crown_is_active(c) then
-				found = c
-				break
-			end
-		end
-
-		if found then
-			crown_memo, crown_memo_at = found, os.clock()
-		end
+		local found = candidates[1]
+		if found then crown_memo, crown_memo_at = found, os.clock() end
 		return found
 	end
 
@@ -3159,6 +3191,13 @@ gui.textbox(targets, {
     default = SD.config.sell_name,
     placeholder = "leave blank",
     callback = bind("sell_name"),
+})
+
+gui.textbox(targets, {
+    text = "Crown name (only if auto-detect misses)",
+    default = SD.config.crown_name,
+    placeholder = "Crown",
+    callback = bind("crown_name"),
 })
 
 gui.textbox(targets, {

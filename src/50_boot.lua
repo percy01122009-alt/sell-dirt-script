@@ -143,6 +143,13 @@ gui.textbox(targets, {
 })
 
 gui.textbox(targets, {
+    text = "Crown name (only if auto-detect misses)",
+    default = SD.config.crown_name,
+    placeholder = "Crown",
+    callback = bind("crown_name"),
+})
+
+gui.textbox(targets, {
     text = "Dig tool name",
     default = SD.config.dig_tool_name,
     placeholder = "Shovel",
