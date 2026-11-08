@@ -211,63 +211,76 @@ end
 
 -- interaction ---------------------------------------------------------------
 
--- Fire every prompt and click detector living inside an instance.
-function SD.interact(inst, radius)
-    if not inst then return 0 end
-    local fired = 0
-    local targets = { inst }
-    local ok, desc = pcall(function() return inst:GetDescendants() end)
-    if ok and desc then
-        for _, d in ipairs(desc) do targets[#targets + 1] = d end
-    end
+	local function risky_interaction(inst)
+		-- basic safety even before features hook: block obvious monetization/autosell gamepass prompts
+		if SD.is_risky and SD.is_risky(inst) then return true end
+		if not inst or not inst.Parent then return false end
+		local bits = {}
+		local function add(s) if type(s)=="string" and s~="" then bits[#bits+1]=string.lower(s) end end
+		add(inst.Name)
+		pcall(function() add(inst:GetFullName()) end)
+		if inst:IsA("ProximityPrompt") then
+			pcall(function() add(inst.ActionText) end)
+			pcall(function() add(inst.ObjectText) end)
+		end
+		for _, b in ipairs(bits) do
+			if string.find(b, "robux", 1, true) or string.find(b, "gamepass", 1, true) or string.find(b, "game pass", 1, true) or string.find(b, "devproduct", 1, true) then return true end
+			if string.find(b, "autosell", 1, true) or string.find(b, "auto sell", 1, true) or string.find(b, "auto-sell", 1, true) then return true end
+			if string.find(b, "donate", 1, true) or string.find(b, "premium", 1, true) then return true end
+		end
+		return false
+	end
 
-    for _, d in ipairs(targets) do
-        if d:IsA("ProximityPrompt") then
-            if SD.caps.fireprompt then
-                pcall(fireproximityprompt, d)
-                fired = fired + 1
-            else
-                pcall(function()
-                    d:InputHoldBegin()
-                    task.wait(d.HoldDuration + 0.05)
-                    d:InputHoldEnd()
-                end)
-                fired = fired + 1
-            end
-        elseif d:IsA("ClickDetector") then
-            if SD.caps.fireclick then
-                pcall(fireclickdetector, d)
-                fired = fired + 1
-            end
-        end
-    end
-    return fired
-end
+	-- Fire every prompt and click detector living inside an instance.
+	function SD.interact(inst, radius)
+	    if not inst then return 0 end
+	    local fired = 0
+	    local targets = { inst }
+	    local ok, desc = pcall(function() return inst:GetDescendants() end)
+	    if ok and desc then
+	        for _, d in ipairs(desc) do targets[#targets + 1] = d end
+	    end
 
--- Fire prompts near a world position (used after a teleport).
-function SD.interact_near(pos, radius)
-    SD.refresh()
-    local fired = 0
-    for _, p in ipairs(SD.cache.prompts) do
-        local part = SD.resolve_part(p)
-        if part and dist_to(part, pos) <= (radius or 12) then
-            if SD.caps.fireprompt then
-                pcall(fireproximityprompt, p)
-                fired = fired + 1
-            end
-        end
-    end
-    for _, c in ipairs(SD.cache.clicks) do
-        local part = SD.resolve_part(c)
-        if part and dist_to(part, pos) <= (radius or 12) then
-            if SD.caps.fireclick then
-                pcall(fireclickdetector, c)
-                fired = fired + 1
-            end
-        end
-    end
-    return fired
-end
+	    for _, d in ipairs(targets) do
+	        if d:IsA("ProximityPrompt") then
+	            if not risky_interaction(d) and SD.caps.fireprompt then
+	                pcall(fireproximityprompt, d)
+	                fired = fired + 1
+	            end
+	        elseif d:IsA("ClickDetector") then
+	            if not risky_interaction(d) and SD.caps.fireclick then
+	                pcall(fireclickdetector, d)
+	                fired = fired + 1
+	            end
+	        end
+	    end
+	    return fired
+	end
+
+	-- Fire prompts near a world position (used after a teleport).
+	function SD.interact_near(pos, radius)
+	    SD.refresh()
+	    local fired = 0
+	    for _, p in ipairs(SD.cache.prompts) do
+	        local part = SD.resolve_part(p)
+	        if part and dist_to(part, pos) <= (radius or 12) then
+	            if not risky_interaction(p) and SD.caps.fireprompt then
+	                pcall(fireproximityprompt, p)
+	                fired = fired + 1
+	            end
+	        end
+	    end
+	    for _, c in ipairs(SD.cache.clicks) do
+	        local part = SD.resolve_part(c)
+	        if part and dist_to(part, pos) <= (radius or 12) then
+	            if not risky_interaction(c) and SD.caps.fireclick then
+	                pcall(fireclickdetector, c)
+	                fired = fired + 1
+	            end
+	        end
+	    end
+	    return fired
+	end
 
 -- remote probing ------------------------------------------------------------
 
