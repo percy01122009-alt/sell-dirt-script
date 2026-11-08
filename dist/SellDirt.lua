@@ -10,7 +10,7 @@
 local SD = {}
 getgenv().SD = SD
 
-SD.version   = "2.2.0"
+SD.version   = "2.2.2"
 SD.game_name = "Sell Dirt"
 
 local function svc(name)
@@ -2171,8 +2171,9 @@ function F.collect_once()
 					-- collect is for pickups/drops/rewards/balls only - NEVER sell/upgrade
 					local looks_sell = string.find(text, "sell", 1, true) or string.find(text, "cashout", 1, true) or string.find(text, "exchange", 1, true)
 					local looks_upgrade = string.find(text, "upgrade", 1, true) or string.find(text, "buy", 1, true) or string.find(text, "shop", 1, true)
+					local looks_extractor = string.find(text, "extractor", 1, true) or string.find(text, "extract", 1, true) or string.find(text, "machine", 1, true) or string.find(text, "processor", 1, true)
 					local looks_collect = string.find(text, "collect", 1, true) or string.find(text, "claim", 1, true) or string.find(text, "pickup", 1, true) or string.find(text, "pick up", 1, true) or string.find(text, "grab", 1, true) or string.find(text, "take", 1, true) or string.find(text, "reward", 1, true) or string.find(text, "ball", 1, true) or string.find(text, "drop", 1, true) or string.find(text, "loot", 1, true)
-					if not looks_sell and not looks_upgrade and looks_collect then
+					if not looks_sell and not looks_upgrade and not looks_extractor and looks_collect then
 						local part = SD.resolve_part(p)
 						if part and (part.Position - hrp.Position).Magnitude <= 45 then
 							local ok = pcall(fireproximityprompt, p)
